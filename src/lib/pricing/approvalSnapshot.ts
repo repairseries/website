@@ -81,7 +81,31 @@ export function snapshotFromQuoteLine(
 }
 
 /** Firestore price fields written at confirm. Customer totals come only from the snapshot. */
-export function lockedBookingPriceFields(snapshot: ApprovalPriceSnapshot): Record<string, number | ApprovalPriceSnapshot | string> {
+export type LockedBookingPriceFields = {
+  financeFormulaVersion: "v3";
+  amount: number;
+  servicePrice: number;
+  serviceAmount: number;
+  serviceSubtotal: number;
+  customerConvenienceFee: number;
+  convenienceFee: number;
+  quotedConvenienceFee: number;
+  visitingCharge: number;
+  gst: 0;
+  customerTotal: number;
+  quotedFinalAmount: number;
+  originalCustomerTotal: number;
+  originalConvenienceFee: number;
+  originalVisitingCharge: number;
+  originalBookingAmount: number;
+  discountAmount?: number;
+  approvalPriceSnapshot: ApprovalPriceSnapshot;
+};
+
+/** Firestore price fields written at confirm. Customer totals come only from the snapshot. */
+export function lockedBookingPriceFields(
+  snapshot: ApprovalPriceSnapshot,
+): LockedBookingPriceFields {
   return {
     financeFormulaVersion: "v3",
     amount: snapshot.serviceAmount,
