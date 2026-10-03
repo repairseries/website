@@ -31,15 +31,17 @@ import {
 } from "@/lib/booking/saved-addresses";
 import { getAuthClient } from "@/lib/firebase/auth";
 import {
-  buildLocalCheckoutQuote,
   calculatePartnerEconomics,
   type CheckoutQuoteLine,
 } from "@/lib/pricing";
+import {
+  lockedBookingPriceFields,
+  snapshotFromQuoteLine,
+} from "@/lib/pricing/approvalSnapshot";
 import { NO_PARTNER_FOR_SLOT, SLOT_NO_LONGER_AVAILABLE } from "@/lib/booking/messages";
 import {
   getServiceName,
   getActiveVariations,
-  getServicePrice,
 } from "@/lib/services/helpers";
 import {
   canClaimRevisit,
@@ -185,51 +187,38 @@ export async function createCustomerBooking(
   let servicePrice = 0;
 
   const activeVariations = getActiveVariations(service);
-  if (service.hasVariations || activeVariations.length > 0) {
-    if (!variationId) throw new Error("Select a service option.");
-    const match = activeVariations.find((v) => String(v.id) === variationId);
-    if (!match) throw new Error("Invalid service option.");
-    servicePrice = match.price;
-    selectedVariations = [
-      {
-        variationId: match.id,
-        title: match.title,
-        price: match.price,
-        quantity: 1,
-      },
-    ];
-  } else {
-    servicePrice = getServicePrice(service) ?? 0;
-  }
-
-  if (!Number.isFinite(servicePrice) || servicePrice < 0) {
-    throw new Error("Invalid service price.");
-  }
-
   const categoryId = getServiceCategoryId(service);
   let priced: CheckoutQuoteLine | null = null;
+  let approvalSnapshot = null as ReturnType<typeof snapshotFromQuoteLine> | null;
+
   if (!revisitFrom) {
-    if (params.quoteLine) {
-      priced = params.quoteLine;
-    } else {
-      const qty = Math.max(1, Math.round(Number(params.quantity) || 1));
-      priced =
-        buildLocalCheckoutQuote({
-          items: [
-            {
-              lineId: service.id,
-              serviceId: service.id,
-              variationId: variationId || undefined,
-              categoryId,
-              unitPrice: servicePrice,
-              quantity: qty,
-            },
-          ],
-          discountAmount: params.discountAmount,
-        }).lines[0] ?? null;
+    if (!params.quoteLine) {
+      throw new Error("Could not confirm the booking amount.");
     }
-    if (!priced) throw new Error("Could not confirm the booking amount.");
-    servicePrice = priced.customer.serviceAmount;
+    priced = params.quoteLine;
+    approvalSnapshot = snapshotFromQuoteLine(priced);
+    servicePrice = approvalSnapshot.serviceAmount;
+    const qty =
+      approvalSnapshot.items[0]?.quantity ||
+      Math.max(1, Math.round(Number(params.quantity) || 1));
+    const unitPrice = approvalSnapshot.items[0]?.unitPrice ?? servicePrice;
+    if (service.hasVariations || activeVariations.length > 0) {
+      if (!variationId) throw new Error("Select a service option.");
+      const match = activeVariations.find((v) => String(v.id) === variationId);
+      if (!match) throw new Error("Invalid service option.");
+      selectedVariations = [
+        {
+          variationId: match.id,
+          title: match.title,
+          price: unitPrice,
+          quantity: qty,
+        },
+      ];
+    }
+  }
+
+  if (!revisitFrom && (!Number.isFinite(servicePrice) || servicePrice < 0)) {
+    throw new Error("Invalid service price.");
   }
 
   const discountAmount = revisitFrom
@@ -275,25 +264,16 @@ export async function createCustomerBooking(
     amount: revisitFrom ? 0 : servicePrice,
     visitingCharge: priced ? Number(priced.customer.visitingCharge) || 0 : 0,
     servicePrice: revisitFrom ? 0 : servicePrice,
-    ...(priced
+    ...(priced && approvalSnapshot
       ? {
-            financeFormulaVersion: "v3",
-            serviceAmount: servicePrice,
-            serviceSubtotal: servicePrice,
-            customerConvenienceFee: Number(priced.customer.customerConvenienceFee) || 0,
-            convenienceFee: Number(priced.customer.customerConvenienceFee) || 0,
+            ...lockedBookingPriceFields(approvalSnapshot),
             convenienceFeeRate: Number(priced.convenienceRate) || 0,
-            visitingCharge: Number(priced.customer.visitingCharge) || 0,
-            gst: 0,
-            customerTotal: Number(priced.customer.customerTotal) || servicePrice,
             ...calculatePartnerEconomics(
-              servicePrice,
-              Number(priced.customer.customerConvenienceFee) || 0,
-              Number(priced.customer.visitingCharge) || 0,
+              approvalSnapshot.serviceAmount,
+              approvalSnapshot.convenienceFee,
+              approvalSnapshot.visitingCharge,
               Number(snapRates.platformFeePercent) || 0,
             ),
-            quotedConvenienceFee: Number(priced.customer.customerConvenienceFee) || 0,
-            quotedFinalAmount: Number(priced.customer.customerTotal) || servicePrice,
             platformFeePercent: Number(snapRates.platformFeePercent) || 0,
             addonFeePercent: Number(snapRates.addonFeePercent) || 0,
             sparePartCommissionPercent: Number(snapRates.sparePartCommissionPercent) || 0,

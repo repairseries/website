@@ -470,10 +470,15 @@ export function BookingFlow({ serviceIdOrSlug }: { serviceIdOrSlug: string }) {
   }, [service, variationId]);
 
   const serviceCharge = isRevisitClaim ? 0 : displayPrice ?? 0;
-  const quote =
-    !isRevisitClaim && service?.id
-      ? localQuoteForService(service, variationId, Number(displayPrice) || 0, appliedCoupon)
-      : null;
+  const quote = useMemo(() => {
+    if (isRevisitClaim || !service?.id) return null;
+    return localQuoteForService(
+      service,
+      variationId,
+      Number(displayPrice) || 0,
+      appliedCoupon,
+    );
+  }, [isRevisitClaim, service, variationId, displayPrice, appliedCoupon]);
   const discountAmount = isRevisitClaim ? 0 : Number(quote?.customer.discount) || 0;
   const estimatedTotal = isRevisitClaim
     ? 0

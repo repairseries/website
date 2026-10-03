@@ -47,7 +47,22 @@ describe("commercial invoice totals", () => {
     );
   });
 
-  it("ignores spare parts and extra services on the company invoice", () => {
+  it("lists additional service quantity on the invoice", () => {
+    expectFinal(
+      {
+        serviceName: "AC Repair",
+        serviceSubtotal: 2000,
+        customerConvenienceFee: 140,
+        additionalServices: [
+          { title: "Service A", unitPrice: 500, price: 500, quantity: 3, lineTotal: 1500 },
+        ],
+      },
+      3640,
+      ["AC Repair", "Service A × 3", "Convenience Fee"],
+    );
+  });
+
+  it("ignores spare parts when extra service lines are absent", () => {
     expectFinal(
       {
         serviceName: "Chimney Cleaning",
@@ -63,6 +78,21 @@ describe("commercial invoice totals", () => {
 
   it("hides convenience fee when zero", () => {
     expectFinal({ serviceSubtotal: 500, customerConvenienceFee: 0 }, 500, ["Service"]);
+  });
+
+  it("locked snapshot invoice includes visiting when it was on approval", () => {
+    const inv = buildCommercialInvoice({
+      serviceName: "Quick Fix",
+      approvalPriceSnapshot: {
+        serviceAmount: 80,
+        convenienceFee: 8,
+        visitingCharge: 99,
+        customerTotal: 187,
+      },
+      addedServicesAmount: 50,
+    });
+    assert.equal(inv.finalAmount, 187);
+    assert.deepEqual(labels(inv), ["Quick Fix", "Convenience Fee", "Visiting Charge"]);
   });
 
   it("ignores historical GST fields on old bookings", () => {

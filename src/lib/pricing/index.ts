@@ -19,9 +19,10 @@ export {
   DEFAULT_PLATFORM_COMMISSION_PERCENT,
   DEFAULT_ADDON_FEE_PERCENT,
 } from "./buildLocalQuote";
-export type {
-  CheckoutQuote,
-  CheckoutQuoteLine,
-  CheckoutCustomerAmounts,
-  LocalQuoteItem,
-} from "./buildLocalQuote";
+export {
+  lockApprovalPriceSnapshot,
+  snapshotFromQuoteLine,
+  lockedBookingPriceFields,
+  totalsAfterAdditionalServices,
+} from "./approvalSnapshot";
+export type { ApprovalPriceSnapshot, ApprovalPriceItem } from "./approvalSnapshot";

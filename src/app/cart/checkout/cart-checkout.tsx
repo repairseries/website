@@ -231,10 +231,8 @@ export function CartCheckoutClient() {
 
       const createdIds: string[] = [];
       let sharedTechId = "";
-      const freshQuote = buildLocalCheckoutQuote({
-        items: pricingItems,
-        discountAmount: discountAmountPreview,
-      });
+      const freshQuote = quote;
+      if (!freshQuote) throw new Error("Could not confirm the booking amount.");
       const couponLineId = freshQuote.lines[0]?.lineId;
 
       for (const group of groups) {
