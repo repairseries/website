@@ -8,7 +8,6 @@ import {
   type InvoiceAccess,
 } from "@/lib/invoice/server/auth";
 import { jsonWithCors } from "@/lib/api/cors";
-import { adminCredentialFailure } from "@/lib/server/auth";
 import { invoiceDocId } from "@/lib/server/finance";
 import { pickStoredCloudinaryInvoiceUrl } from "@/lib/storage/invoicePdf";
 
@@ -77,47 +76,31 @@ export async function handleGeneratePost(req: NextRequest) {
       { status: 503 },
     );
   }
-  let db;
+
+  let db = null;
   try {
     db = getAdminDb();
   } catch (err) {
-    if (existingPdfUrl) {
-      return jsonWithCors(req, {
-        ok: true,
-        success: true,
-        reused: true,
-        pdfUrl: existingPdfUrl,
-        invoicePdfUrl: existingPdfUrl,
-        invoiceId: booking.invoiceId || invoiceDocId(bookingId),
-        invoiceNumber: booking.invoiceNumber || existingInvoice?.invoiceNumber || "",
-      });
-    }
-    throw err;
-  }
-  let result;
-  try {
-    result = await generateAndStoreInvoice(db, {
-      bookingId,
-      booking,
-      force,
-      sendEmail: access.role === "admin" ? body.sendEmail !== false : true,
-      secrets: invoiceSecretsFromEnv(),
+    console.info("[Invoice API] Admin Firestore unavailable; generating PDF without Admin writes", {
+      message: String((err as Error)?.message || err).slice(0, 160),
     });
-  } catch (err) {
-    if (adminCredentialFailure(err) && existingPdfUrl) {
-      return jsonWithCors(req, {
-        ok: true,
-        success: true,
-        reused: true,
-        pdfUrl: existingPdfUrl,
-        invoicePdfUrl: existingPdfUrl,
-        invoiceId: booking.invoiceId || invoiceDocId(bookingId),
-        invoiceNumber: booking.invoiceNumber || existingInvoice?.invoiceNumber || "",
-      });
-    }
-    throw err;
   }
-  console.info("[Invoice API] Invoice generation completed", { bookingId });
+
+  const result = await generateAndStoreInvoice(db, {
+    bookingId,
+    booking,
+    existingInvoice,
+    idToken: access.idToken,
+    force,
+    sendEmail: access.role === "admin" ? body.sendEmail !== false : true,
+    secrets: invoiceSecretsFromEnv(),
+  });
+  console.info("[Invoice API] Invoice generation completed", {
+    bookingId,
+    pdfUrl: result.pdfUrl || "",
+    publicId: result.publicId || result.fileKey || "",
+    reused: Boolean(result.reused),
+  });
 
   return jsonWithCors(req, { ...result, ok: true, success: true });
 }

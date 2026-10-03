@@ -31,7 +31,7 @@ function visitingChargeAmount(booking) {
   const b = booking || {}
   const snap = b.approvalPriceSnapshot
   if (snap && snap.visitingCharge != null) return money(snap.visitingCharge)
-  return 0
+  return money(b.originalVisitingCharge ?? b.visitingCharge)
 }
 
 function lockedCustomerTotal(booking) {
@@ -89,8 +89,15 @@ function buildCommercialInvoice(booking) {
   if (convenienceFee > 0) lines.push({ label: 'Convenience Fee', amount: convenienceFee })
   if (visitingCharge > 0) lines.push({ label: 'Visiting Charge', amount: visitingCharge })
   const computed = money(serviceAmount + convenienceFee + visitingCharge + extraServiceAmount)
-  const base = locked > 0 ? locked : money(serviceAmount + convenienceFee + visitingCharge)
-  const finalAmount = money(base + extraServiceAmount)
+  const lockedBase = locked > 0 ? locked : money(serviceAmount + convenienceFee + visitingCharge)
+  const fromLockedExtras = money(lockedBase + extraServiceAmount)
+  const committed = money(booking.finalBookingAmount ?? booking.totalAmount)
+  const finalAmount =
+    extraServiceAmount > 0
+      ? money(Math.max(committed, fromLockedExtras, computed))
+      : committed > 0
+        ? committed
+        : fromLockedExtras || computed
   return {
     serviceAmount,
     sparePartValue: 0,

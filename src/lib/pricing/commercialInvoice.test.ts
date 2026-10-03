@@ -103,10 +103,24 @@ describe("commercial invoice totals", () => {
       gstAmount: 99,
       gstPercent: 18,
       visitingCharge: 99,
-      finalBookingAmount: 748,
+      finalBookingAmount: 649,
     });
-    assert.equal(inv.finalAmount, 550);
+    assert.equal(inv.finalAmount, 649);
     assert.equal(inv.gstAmount, 0);
-    assert.deepEqual(labels(inv), ["RO Service", "Convenience Fee"]);
+    assert.deepEqual(labels(inv), ["RO Service", "Convenience Fee", "Visiting Charge"]);
+  });
+
+  it("uses the stored committed booking total when extras are approved", () => {
+    expectFinal(
+      {
+        serviceName: "AC Repair",
+        serviceSubtotal: 1249,
+        customerConvenienceFee: 299,
+        finalBookingAmount: 2271,
+        additionalServices: [{ title: "Gas top-up", price: 723, quantity: 1 }],
+      },
+      2271,
+      ["AC Repair", "Gas top-up", "Convenience Fee"],
+    );
   });
 });

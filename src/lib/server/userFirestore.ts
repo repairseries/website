@@ -113,6 +113,67 @@ export async function queryFirstByCodeWithUserToken(
   return { id, ...decodeFields(doc.fields) };
 }
 
+function encodeValue(value: unknown): Record<string, unknown> {
+  if (value == null) return { nullValue: null };
+  if (typeof value === "string") return { stringValue: value };
+  if (typeof value === "boolean") return { booleanValue: value };
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return { nullValue: null };
+    if (Number.isInteger(value)) return { integerValue: String(value) };
+    return { doubleValue: value };
+  }
+  if (value instanceof Date) return { timestampValue: value.toISOString() };
+  if (Array.isArray(value)) {
+    return { arrayValue: { values: value.map(encodeValue) } };
+  }
+  if (typeof value === "object") {
+    const fields: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (nested === undefined) continue;
+      fields[key] = encodeValue(nested);
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(value) };
+}
+
+export async function patchDocumentWithUserToken(
+  idToken: string,
+  docPath: string,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const path = String(docPath || "").replace(/^\/+/, "");
+  const keys = Object.keys(patch).filter((key) => patch[key] !== undefined);
+  if (!keys.length) return false;
+  const params = keys
+    .map((key) => `updateMask.fieldPaths=${encodeURIComponent(key)}`)
+    .join("&");
+  const fields: Record<string, unknown> = {};
+  for (const key of keys) {
+    fields[key] = encodeValue(patch[key]);
+  }
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId()}/databases/(default)/documents/${path}?${params}`;
+  console.info("[UserFirestore] patch", { path, keys, projectId: projectId() });
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ fields }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    console.info("[UserFirestore] patch failed", {
+      path,
+      status: res.status,
+      message: String(body.error?.message || "").slice(0, 180),
+    });
+    return false;
+  }
+  return true;
+}
+
 export async function verifyIdTokenWithApiKey(idToken: string): Promise<{
   uid: string;
   projectId: string;

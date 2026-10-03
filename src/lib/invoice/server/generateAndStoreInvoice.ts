@@ -14,6 +14,11 @@ import {
 import { isCloudinaryConfigured, uploadPdfToCloudinary } from "@/lib/storage/cloudinary";
 import { downloadInvoicePdfFromRecord, hasStoredInvoiceFile, pickStoredCloudinaryInvoiceUrl } from "@/lib/storage/invoicePdf";
 import { validatePdfBuffer } from "@/lib/storage/validate";
+import { adminCredentialFailure } from "@/lib/server/auth";
+import {
+  getDocumentWithUserToken,
+  patchDocumentWithUserToken,
+} from "@/lib/server/userFirestore";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { renderInvoicePdf } = require("./renderPdf") as {
@@ -92,8 +97,43 @@ function stripInvoiceGst(finance: FinanceSnapshot): FinanceSnapshot {
   };
 }
 
+type GenerateInvoiceOptions = {
+  bookingId: string;
+  booking?: Record<string, unknown>;
+  existingInvoice?: Record<string, unknown> | null;
+  idToken?: string;
+  force?: boolean;
+  sendEmail?: boolean;
+  secrets?: {
+    resend?: Record<string, string>;
+  };
+};
+
+async function readFirestoreDoc(
+  db: Firestore | null | undefined,
+  idToken: string | undefined,
+  path: string,
+): Promise<Record<string, unknown> | null> {
+  if (db) {
+    try {
+      const snap = await db.doc(path).get();
+      return snap.exists ? ((snap.data() || {}) as Record<string, unknown>) : null;
+    } catch (err) {
+      if (!adminCredentialFailure(err)) throw err;
+    }
+  }
+  if (idToken) {
+    try {
+      return await getDocumentWithUserToken(idToken, path);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 async function recordInvoiceJob(
-  db: Firestore,
+  db: Firestore | null | undefined,
   bookingId: string,
   patch: {
     status: "issued" | "failed";
@@ -101,6 +141,7 @@ async function recordInvoiceJob(
     cloudinaryPublicId?: string | null;
   },
 ) {
+  if (!db) return;
   const bookingRef = db.doc(`bookings/${bookingId}`);
   const snap = await bookingRef.get();
   const prev = (snap.data()?.invoiceJob || {}) as Record<string, unknown>;
@@ -122,35 +163,25 @@ async function recordInvoiceJob(
 }
 
 async function generateAndStoreInvoiceInner(
-  db: Firestore,
-  options: {
-    bookingId: string;
-    booking?: Record<string, unknown>;
-    force?: boolean;
-    sendEmail?: boolean;
-    secrets?: {
-      resend?: Record<string, string>;
-    };
-  },
+  db: Firestore | null | undefined,
+  options: GenerateInvoiceOptions,
 ) {
   const bookingId = String(options.bookingId || "").trim();
   if (!bookingId) throw new Error("bookingId is required");
+  const idToken = String(options.idToken || "").trim() || undefined;
 
-  const bookingRef = db.doc(`bookings/${bookingId}`);
-  const bookingSnap = options.booking ? null : await bookingRef.get();
   const booking =
     options.booking ||
-    (bookingSnap?.exists ? (bookingSnap.data() as Record<string, unknown>) : null);
+    (await readFirestoreDoc(db, idToken, `bookings/${bookingId}`));
   if (!booking) throw new Error("Booking not found");
 
   const invoiceId = invoiceDocId(bookingId);
-  const invoiceRef = db.doc(`invoices/${invoiceId}`);
-  const existingSnap = await invoiceRef.get();
-  const existing = existingSnap.exists
-    ? (existingSnap.data() as Record<string, unknown>)
-    : null;
+  const existing =
+    options.existingInvoice !== undefined
+      ? options.existingInvoice
+      : await readFirestoreDoc(db, idToken, `invoices/${invoiceId}`);
   const accessUrl = invoiceAccessUrl(bookingId);
-  const existingPdfUrl = storedCloudinaryUrl(existing);
+  const existingPdfUrl = storedCloudinaryUrl(existing) || storedCloudinaryUrl(booking);
 
   if (
     hasStoredInvoiceFile(existing) &&
@@ -158,8 +189,8 @@ async function generateAndStoreInvoiceInner(
     !options.force &&
     isCurrentCompanyInvoiceFormat(existing)
   ) {
-    if (!booking.invoicePdfUrl || !booking.invoiceId) {
-      await bookingRef.set(
+    if ((!booking.invoicePdfUrl || !booking.invoiceId) && db) {
+      await db.doc(`bookings/${bookingId}`).set(
         {
           invoiceId,
           invoiceNumber: existing?.invoiceNumber || "",
@@ -186,30 +217,34 @@ async function generateAndStoreInvoiceInner(
             config: options.secrets?.resend || {},
           });
           emailResult = sent as Record<string, unknown>;
-          const now = FieldValue.serverTimestamp();
-          await invoiceRef.set(
-            {
-              emailSentAt: sent.skipped ? existing?.emailSentAt || null : now,
-              emailStatus: sent.skipped ? sent.reason || "skipped" : "sent",
-              emailSkipReason: sent.skipped ? sent.reason || null : null,
-              emailId: sent.id || null,
-              invoiceEmailStatus: sent.skipped ? "failed" : "sent",
-              invoiceEmailSentAt: sent.skipped ? null : now,
-              updatedAt: now,
-            },
-            { merge: true },
-          );
+          if (db) {
+            const now = FieldValue.serverTimestamp();
+            await db.doc(`invoices/${invoiceId}`).set(
+              {
+                emailSentAt: sent.skipped ? existing?.emailSentAt || null : now,
+                emailStatus: sent.skipped ? sent.reason || "skipped" : "sent",
+                emailSkipReason: sent.skipped ? sent.reason || null : null,
+                emailId: sent.id || null,
+                invoiceEmailStatus: sent.skipped ? "failed" : "sent",
+                invoiceEmailSentAt: sent.skipped ? null : now,
+                updatedAt: now,
+              },
+              { merge: true },
+            ).catch(() => {});
+          }
         } catch (err) {
           emailResult = { skipped: false, error: String((err as Error)?.message || err) };
-          await invoiceRef.set(
-            {
-              emailStatus: "failed",
-              invoiceEmailStatus: "failed",
-              emailError: emailResult.error,
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true },
-          );
+          if (db) {
+            await db.doc(`invoices/${invoiceId}`).set(
+              {
+                emailStatus: "failed",
+                invoiceEmailStatus: "failed",
+                emailError: emailResult.error,
+                updatedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true },
+            ).catch(() => {});
+          }
         }
       }
     }
@@ -237,23 +272,13 @@ async function generateAndStoreInvoiceInner(
     );
   }
 
-  const [settingsSnap, generalSnap, techSnap] = await Promise.all([
-    db.doc("settings/invoice").get(),
-    db.doc("settings/general").get(),
-    booking.technicianId
-      ? db.doc(`technicians/${String(booking.technicianId)}`).get()
-      : Promise.resolve(null),
-  ]);
-  const settingsRaw = settingsSnap.exists
-    ? (settingsSnap.data() as Record<string, unknown>)
-    : {};
-  const settingsGeneral = generalSnap.exists
-    ? (generalSnap.data() as Record<string, unknown>)
-    : {};
-  const technician =
-    techSnap && "exists" in techSnap && techSnap.exists
-      ? (techSnap.data() as Record<string, unknown>)
-      : null;
+  const settingsRaw =
+    (await readFirestoreDoc(db, idToken, "settings/invoice")) || {};
+  const settingsGeneral =
+    (await readFirestoreDoc(db, idToken, "settings/general")) || {};
+  const technician = booking.technicianId
+    ? await readFirestoreDoc(db, idToken, `technicians/${String(booking.technicianId)}`)
+    : null;
 
   const finance = stripInvoiceGst(
     financeFromBooking({
@@ -379,25 +404,38 @@ async function generateAndStoreInvoiceInner(
     ...(options.force ? { regeneratedAt: now } : {}),
   };
 
-  try {
-    await invoiceRef.set(firestoreInvoice, { merge: true });
-  } catch (err) {
-    persistWarning.push(`invoice_doc:${String((err as Error)?.message || err)}`);
+  const bookingLink = {
+    invoiceId,
+    invoiceNumber: invoiceData.invoiceNumber,
+    invoicePdfUrl: pdfUrl,
+    invoiceStatus: "issued",
+    cloudinaryPublicId: uploaded.publicId,
+  };
+  if (db) {
+    try {
+      await db.doc(`invoices/${invoiceId}`).set(firestoreInvoice, { merge: true });
+    } catch (err) {
+      persistWarning.push(`invoice_doc:${String((err as Error)?.message || err)}`);
+    }
+    try {
+      await db.doc(`bookings/${bookingId}`).set(
+        {
+          ...bookingLink,
+          invoiceCreatedAt: now,
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+    } catch (err) {
+      persistWarning.push(`booking_doc:${String((err as Error)?.message || err)}`);
+    }
   }
-  try {
-    await bookingRef.set(
-      {
-        invoiceId,
-        invoiceNumber: invoiceData.invoiceNumber,
-        invoicePdfUrl: pdfUrl,
-        invoiceStatus: "issued",
-        invoiceCreatedAt: now,
-        updatedAt: now,
-      },
-      { merge: true },
-    );
-  } catch (err) {
-    persistWarning.push(`booking_doc:${String((err as Error)?.message || err)}`);
+  if (idToken) {
+    const patched = await patchDocumentWithUserToken(idToken, `bookings/${bookingId}`, {
+      ...bookingLink,
+      updatedAt: new Date(),
+    });
+    if (!patched) persistWarning.push("booking_doc:user_token_patch_failed");
   }
 
   try {
@@ -410,7 +448,7 @@ async function generateAndStoreInvoiceInner(
       body: `Your invoice ${invoiceData.invoiceNumber || ""} is ready.`,
     });
   } catch {
-    /* invoice exists even if notify fails */
+    /* invoice PDF is already on Cloudinary even if notify fails */
   }
 
   const invoiceForEmail = { ...invoiceData, pdfUrl };
@@ -422,18 +460,20 @@ async function generateAndStoreInvoiceInner(
         pdfBuffer,
         config: options.secrets?.resend || {},
       })) as Record<string, unknown>;
-      await invoiceRef.set(
-        {
-          emailSentAt: emailResult.skipped ? null : now,
-          emailStatus: emailResult.skipped ? "skipped" : "sent",
-          emailSkipReason: emailResult.skipped ? emailResult.reason || null : null,
-          emailId: emailResult.id || null,
-          invoiceEmailStatus: emailResult.skipped ? "failed" : "sent",
-          invoiceEmailSentAt: emailResult.skipped ? null : now,
-          updatedAt: now,
-        },
-        { merge: true },
-      ).catch(() => {});
+      if (db) {
+        await db.doc(`invoices/${invoiceId}`).set(
+          {
+            emailSentAt: emailResult.skipped ? null : now,
+            emailStatus: emailResult.skipped ? "skipped" : "sent",
+            emailSkipReason: emailResult.skipped ? emailResult.reason || null : null,
+            emailId: emailResult.id || null,
+            invoiceEmailStatus: emailResult.skipped ? "failed" : "sent",
+            invoiceEmailSentAt: emailResult.skipped ? null : now,
+            updatedAt: now,
+          },
+          { merge: true },
+        ).catch(() => {});
+      }
     } catch (err) {
       emailResult = { skipped: true, error: String((err as Error)?.message || err) };
     }
@@ -458,16 +498,8 @@ async function generateAndStoreInvoiceInner(
 }
 
 export async function generateAndStoreInvoice(
-  db: Firestore,
-  options: {
-    bookingId: string;
-    booking?: Record<string, unknown>;
-    force?: boolean;
-    sendEmail?: boolean;
-    secrets?: {
-      resend?: Record<string, string>;
-    };
-  },
+  db: Firestore | null | undefined,
+  options: GenerateInvoiceOptions,
 ) {
   const bookingId = String(options.bookingId || "").trim();
   try {
