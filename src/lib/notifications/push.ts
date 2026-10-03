@@ -1,6 +1,6 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { getAdminMessaging, hasServiceAccount } from "@/lib/firebase/admin";
-import { channelFor } from "@/lib/notifications/copy";
+import { channelFor, soundFor } from "@/lib/notifications/copy";
 
 export type TokenEntry = { token: string; type: "expo" | "fcm" };
 
@@ -90,7 +90,9 @@ async function sendFcm(
     if (v == null) continue;
     stringData[String(k)] = String(v);
   }
-  const channelId = channelFor(stringData.type || "");
+  const type = stringData.type || "";
+  const channelId = channelFor(type);
+  const sound = soundFor(type);
   const invalid: string[] = [];
   let sent = 0;
   for (const token of tokens) {
@@ -101,10 +103,16 @@ async function sendFcm(
         data: stringData,
         android: {
           priority: "high",
-          notification: { channelId, sound: "default" },
+          notification: {
+            channelId,
+            sound,
+            priority: sound === "booking_alert" ? "max" : "high",
+            visibility: "public",
+            defaultSound: false,
+          },
         },
         apns: {
-          payload: { aps: { sound: "default", badge: 1 } },
+          payload: { aps: { sound, badge: 1 } },
         },
       });
       sent += 1;
@@ -129,12 +137,13 @@ export async function deliverToTokens(
   const fcmTokens: string[] = [];
   const type = String(payload.data?.type || "");
   const channelId = channelFor(type);
+  const sound = soundFor(type);
 
   for (const entry of tokenEntries) {
     if (entry.type === "expo" || isExpoToken(entry.token)) {
       expoMsgs.push({
         to: entry.token,
-        sound: "default",
+        sound,
         title: payload.title,
         body: payload.body,
         data: payload.data || {},

@@ -28,6 +28,8 @@ export const CUSTOMER_COPY: Record<string, (s: string) => string> = {
 export const TECH_COPY: Record<string, (s: string, code: string) => string> = {
   booking_assigned: (s, code) =>
     `Nayi booking: ${s}${code ? ` (${code})` : ""}. Open app to accept & navigate.`,
+  new_booking: (s, code) =>
+    `Nayi booking: ${s}${code ? ` (${code})` : ""}. Open app to accept & navigate.`,
   created: (s, code) =>
     `Nayi booking: ${s}${code ? ` (${code})` : ""}. Open app to accept & navigate.`,
   assigned: (s, code) =>
@@ -60,15 +62,32 @@ export function techBody(
 }
 
 export function techEventFrom(eventType: string): string {
-  if (eventType === "assigned" || eventType === "created" || eventType === "partner_assigned") {
+  const t = String(eventType || "").toLowerCase();
+  if (
+    t === "assigned" ||
+    t === "created" ||
+    t === "partner_assigned" ||
+    t === "new_booking"
+  ) {
     return "booking_assigned";
   }
-  if (eventType === "cancelled") return "booking_cancelled";
+  if (t === "cancelled") return "booking_cancelled";
   return eventType;
 }
 
+export function isNewBookingEvent(eventType: string): boolean {
+  const t = String(eventType || "").trim().toLowerCase();
+  return t === "booking_assigned" || t === "new_booking";
+}
+
+/** Versioned channel — Android cannot change sound/importance on an existing channel id. */
+export const ANDROID_NEW_BOOKING_CHANNEL = "new-booking-v2";
+export const BOOKING_ALERT_SOUND = "booking_alert";
+
 export function channelFor(eventType: string): string {
-  return eventType === "booking_assigned" || eventType === "assigned" || eventType === "created"
-    ? "booking-assignments"
-    : "booking-updates";
+  return isNewBookingEvent(eventType) ? ANDROID_NEW_BOOKING_CHANNEL : "booking-updates";
+}
+
+export function soundFor(eventType: string): string {
+  return isNewBookingEvent(eventType) ? BOOKING_ALERT_SOUND : "default";
 }

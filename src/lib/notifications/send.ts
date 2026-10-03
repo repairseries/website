@@ -4,6 +4,7 @@ import {
   customerBody,
   techBody,
   techEventFrom,
+  isNewBookingEvent,
 } from "@/lib/notifications/copy";
 import {
   collectTokensFromDoc,
@@ -31,6 +32,7 @@ export const ALLOWED_EVENTS = new Set([
   "payment_received",
   "invoice_generated",
   "booking_assigned",
+  "new_booking",
   "booking_cancelled",
   "kyc_submitted",
   "kyc_approved",
@@ -123,6 +125,48 @@ async function markDelivered(input: NotifyInput, result: Record<string, unknown>
       result,
     },
     { merge: true },
+  );
+}
+
+function locationFromBooking(booking: Record<string, unknown> | null): string {
+  if (!booking) return "";
+  const pick = (value: unknown): string => {
+    if (!value) return "";
+    if (typeof value === "string") return value.trim();
+    if (typeof value !== "object") return "";
+    const rec = value as Record<string, unknown>;
+    return [rec.formatted, rec.address, rec.line1, rec.area, rec.locality, rec.city]
+      .map((x) => String(x || "").trim())
+      .filter(Boolean)
+      .join(", ");
+  };
+  return sanitizeText(
+    pick(booking.address) ||
+      pick(booking.location) ||
+      booking.addressText ||
+      booking.customerAddress ||
+      "",
+    160,
+  );
+}
+
+function customerNameFromBooking(booking: Record<string, unknown> | null): string {
+  if (!booking) return "";
+  return sanitizeText(
+    booking.customerName || booking.customerFullName || booking.name || "",
+    80,
+  );
+}
+
+function bookingTimeFromBooking(booking: Record<string, unknown> | null): string {
+  if (!booking) return "";
+  return sanitizeText(
+    booking.slotLabel ||
+      booking.scheduledLabel ||
+      booking.bookingTime ||
+      booking.timeSlot ||
+      "",
+    80,
   );
 }
 
@@ -227,17 +271,24 @@ export async function sendBookingNotification(input: NotifyInput) {
       tSnap.exists ? (tSnap.data() as Record<string, unknown>) : {},
     );
     const techEvent = techEventFrom(input.eventType);
-    const title = input.techTitle || "Repair Series";
+    const isNewBooking = isNewBookingEvent(techEvent) || isNewBookingEvent(input.eventType);
+    const title = input.techTitle || (isNewBooking ? "New Booking" : "Repair Series");
     const body = input.techBody || techBody(techEvent, serviceName, bookingCode);
+    const customerName = customerNameFromBooking(booking);
+    const location = locationFromBooking(booking);
+    const bookingTime = bookingTimeFromBooking(booking);
     const delivered = await deliverToTokens(tokens, {
       title,
       body,
       data: {
-        type: techEvent === "booking_assigned" ? "booking_assigned" : techEvent,
+        type: isNewBooking ? "NEW_BOOKING" : techEvent,
         bookingId,
-        eventType: techEvent,
+        eventType: isNewBooking ? "NEW_BOOKING" : techEvent,
         serviceName,
         bookingCode,
+        customerName,
+        location,
+        bookingTime,
       },
     });
     if (delivered.invalid.length) {
