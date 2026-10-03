@@ -1,22 +1,26 @@
 import { NextRequest } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { adminCredentialFailure } from "@/lib/server/auth";
-import { verifyIdTokenWithApiKey } from "@/lib/server/userFirestore";
+import {
+  getDocumentWithUserToken,
+  verifyIdTokenWithApiKey,
+} from "@/lib/server/userFirestore";
 
 export type InvoiceAccess = {
   uid: string;
   role: "customer" | "admin" | "technician" | "internal";
+  idToken: string;
 };
 
-function bearerToken(req: NextRequest): string {
+export function invoiceCallerToken(req: NextRequest): string {
   const header = req.headers.get("authorization") || req.headers.get("Authorization") || "";
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match?.[1]?.trim() || "";
+  if (match?.[1]) return match[1].trim();
+  return String(req.nextUrl.searchParams.get("access_token") || "").trim();
 }
 
 export async function requireInvoiceCaller(req: NextRequest): Promise<InvoiceAccess> {
-  const token =
-    bearerToken(req) || String(req.nextUrl.searchParams.get("access_token") || "").trim();
+  const token = invoiceCallerToken(req);
   if (!token) {
     throw Object.assign(new Error("Sign in required"), { status: 401 });
   }
@@ -28,7 +32,7 @@ export async function requireInvoiceCaller(req: NextRequest): Promise<InvoiceAcc
     .map((s) => String(s || "").trim())
     .filter(Boolean);
   if (internalSecrets.includes(token)) {
-    return { uid: "internal", role: "internal" };
+    return { uid: "internal", role: "internal", idToken: token };
   }
 
   let uid = "";
@@ -46,18 +50,35 @@ export async function requireInvoiceCaller(req: NextRequest): Promise<InvoiceAcc
     throw Object.assign(new Error("Sign in required"), { status: 401 });
   }
 
-  const db = getAdminDb();
-  const adminSnap = await db.doc(`adminUsers/${uid}`).get();
-  if (adminSnap.exists && String(adminSnap.data()?.status ?? "") === "active") {
-    return { uid, role: "admin" };
+  try {
+    const db = getAdminDb();
+    const adminSnap = await db.doc(`adminUsers/${uid}`).get();
+    if (adminSnap.exists && String(adminSnap.data()?.status ?? "") === "active") {
+      return { uid, role: "admin", idToken: token };
+    }
+    const techSnap = await db.doc(`technicians/${uid}`).get();
+    if (techSnap.exists) {
+      return { uid, role: "technician", idToken: token };
+    }
+  } catch (err) {
+    if (!adminCredentialFailure(err)) throw err;
+    try {
+      const adminDoc = await getDocumentWithUserToken(token, `adminUsers/${uid}`);
+      if (adminDoc && String(adminDoc.status ?? "") === "active") {
+        return { uid, role: "admin", idToken: token };
+      }
+    } catch {
+      /* customer cannot read adminUsers */
+    }
+    try {
+      const techDoc = await getDocumentWithUserToken(token, `technicians/${uid}`);
+      if (techDoc) return { uid, role: "technician", idToken: token };
+    } catch {
+      /* not a technician */
+    }
   }
 
-  const techSnap = await db.doc(`technicians/${uid}`).get();
-  if (techSnap.exists) {
-    return { uid, role: "technician" };
-  }
-
-  return { uid, role: "customer" };
+  return { uid, role: "customer", idToken: token };
 }
 
 export async function assertBookingAccess(
@@ -75,4 +96,45 @@ export async function assertBookingAccess(
     return;
   }
   throw Object.assign(new Error("Not allowed"), { status: 403 });
+}
+
+export async function loadBookingForInvoice(
+  access: InvoiceAccess,
+  bookingId: string,
+): Promise<Record<string, unknown>> {
+  try {
+    const db = getAdminDb();
+    const snap = await db.doc(`bookings/${bookingId}`).get();
+    if (!snap.exists) {
+      throw Object.assign(new Error("Booking not found"), { status: 404 });
+    }
+    return (snap.data() || {}) as Record<string, unknown>;
+  } catch (err) {
+    if (Number((err as { status?: number }).status) === 404) throw err;
+    if (!adminCredentialFailure(err)) throw err;
+    const data = await getDocumentWithUserToken(access.idToken, `bookings/${bookingId}`);
+    if (!data) {
+      throw Object.assign(new Error("Booking not found"), { status: 404 });
+    }
+    return data;
+  }
+}
+
+export async function loadInvoiceRecordForBooking(
+  access: InvoiceAccess,
+  invoiceId: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const db = getAdminDb();
+    const snap = await db.doc(`invoices/${invoiceId}`).get();
+    if (!snap.exists) return null;
+    return (snap.data() || {}) as Record<string, unknown>;
+  } catch (err) {
+    if (!adminCredentialFailure(err)) throw err;
+    try {
+      return await getDocumentWithUserToken(access.idToken, `invoices/${invoiceId}`);
+    } catch {
+      return null;
+    }
+  }
 }

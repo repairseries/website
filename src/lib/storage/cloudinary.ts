@@ -127,6 +127,36 @@ export async function uploadPdfToCloudinary(options: {
   };
 }
 
+/** Admin-authenticated download when public delivery is restricted. Secret stays server-side. */
+export async function downloadCloudinaryPdfAuthenticated(url: string): Promise<Buffer | null> {
+  const publicId = cloudinaryPublicIdFromUrl(url);
+  const signed = signedCredentials();
+  if (!publicId || !signed) return null;
+  const cloudName = requireCloudName();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const params = { public_id: publicId, timestamp: String(timestamp) };
+  const signature = sign(params, signed.apiSecret);
+  for (const resource of ["image", "raw"] as const) {
+    try {
+      const form = new FormData();
+      form.append("public_id", publicId);
+      form.append("timestamp", String(timestamp));
+      form.append("api_key", signed.apiKey);
+      form.append("signature", signature);
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/${resource}/download`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) continue;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 8) return buf;
+    } catch {
+      /* try next resource type */
+    }
+  }
+  return null;
+}
+
 export function cloudinaryPublicIdFromUrl(url: string): string | null {
   const trimmed = String(url || "").trim();
   if (!/res\.cloudinary\.com/i.test(trimmed)) return null;

@@ -1,11 +1,35 @@
 import { isCloudinaryUrl } from "./keys";
+import { downloadCloudinaryPdfAuthenticated } from "./cloudinary";
+
+export function pickStoredCloudinaryInvoiceUrl(
+  ...sources: Array<Record<string, unknown> | null | undefined>
+): string {
+  for (const source of sources) {
+    if (!source) continue;
+    const nested =
+      source.invoice && typeof source.invoice === "object"
+        ? (source.invoice as Record<string, unknown>)
+        : null;
+    const candidates = [
+      source.pdfUrl,
+      source.invoicePdfUrl,
+      source.secure_url,
+      nested?.pdfUrl,
+      nested?.url,
+      source.invoicePDF,
+    ];
+    for (const candidate of candidates) {
+      const url = String(candidate || "").trim();
+      if (isCloudinaryUrl(url)) return url;
+    }
+  }
+  return "";
+}
 
 export function hasStoredInvoiceFile(
   invoice: Record<string, unknown> | null | undefined,
 ): boolean {
-  const row = invoice || {};
-  const storedUrl = String(row.pdfUrl || row.invoicePdfUrl || "").trim();
-  return isCloudinaryUrl(storedUrl);
+  return Boolean(pickStoredCloudinaryInvoiceUrl(invoice));
 }
 
 export function alternateCloudinaryPdfUrls(url: string): string[] {
@@ -32,16 +56,13 @@ export async function fetchCloudinaryPdf(url: string): Promise<Buffer | null> {
       /* try next candidate */
     }
   }
-  return null;
+  return downloadCloudinaryPdfAuthenticated(url);
 }
 
 export async function downloadInvoicePdfFromRecord(
   invoice: Record<string, unknown> | null | undefined,
 ): Promise<Buffer | null> {
-  const row = invoice || {};
-  const storedUrl = String(row.pdfUrl || row.invoicePdfUrl || "").trim();
-  if (isCloudinaryUrl(storedUrl)) {
-    return fetchCloudinaryPdf(storedUrl);
-  }
+  const storedUrl = pickStoredCloudinaryInvoiceUrl(invoice);
+  if (storedUrl) return fetchCloudinaryPdf(storedUrl);
   return null;
 }

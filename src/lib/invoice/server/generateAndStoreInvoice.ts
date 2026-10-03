@@ -10,10 +10,9 @@ import {
   DOCUMENT_STORAGE_PROVIDER,
   buildInvoiceStoragePath,
   invoiceAccessUrl,
-  isCloudinaryUrl,
 } from "@/lib/storage/keys";
 import { isCloudinaryConfigured, uploadPdfToCloudinary } from "@/lib/storage/cloudinary";
-import { downloadInvoicePdfFromRecord, hasStoredInvoiceFile } from "@/lib/storage/invoicePdf";
+import { downloadInvoicePdfFromRecord, hasStoredInvoiceFile, pickStoredCloudinaryInvoiceUrl } from "@/lib/storage/invoicePdf";
 import { validatePdfBuffer } from "@/lib/storage/validate";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -29,8 +28,7 @@ const { sendInvoiceEmail } = require("./sendEmail") as {
 };
 
 function storedCloudinaryUrl(invoice: Record<string, unknown> | null | undefined): string {
-  const stored = String(invoice?.pdfUrl || invoice?.invoicePdfUrl || "").trim();
-  return isCloudinaryUrl(stored) ? stored : "";
+  return pickStoredCloudinaryInvoiceUrl(invoice);
 }
 
 /** Old 2-page / tax / partner invoices must be regenerated — do not reuse them. */

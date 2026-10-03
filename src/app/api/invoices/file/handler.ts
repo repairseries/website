@@ -1,49 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminDb } from "@/lib/firebase/admin";
 import {
   assertBookingAccess,
+  loadBookingForInvoice,
+  loadInvoiceRecordForBooking,
   requireInvoiceCaller,
 } from "@/lib/invoice/server/auth";
 import { invoiceDocId } from "@/lib/server/finance";
 import { apiCorsHeaders, jsonWithCors } from "@/lib/api/cors";
-import { isCloudinaryUrl } from "@/lib/storage/keys";
-import { fetchCloudinaryPdf } from "@/lib/storage/invoicePdf";
+import { fetchCloudinaryPdf, pickStoredCloudinaryInvoiceUrl } from "@/lib/storage/invoicePdf";
 
 export async function handleInvoiceFileGet(req: NextRequest) {
   const access = await requireInvoiceCaller(req);
-  const bookingId = String(
-    req.nextUrl.searchParams.get("bookingId") || "",
-  ).trim();
+  const bookingId = String(req.nextUrl.searchParams.get("bookingId") || "").trim();
   if (!bookingId) {
     return jsonWithCors(req, { error: "Missing bookingId" }, { status: 400 });
   }
 
-  const db = getAdminDb();
-  const bookingSnap = await db.doc(`bookings/${bookingId}`).get();
-  if (!bookingSnap.exists) {
-    return jsonWithCors(req, { error: "Booking not found" }, { status: 404 });
-  }
-  const booking = (bookingSnap.data() || {}) as Record<string, unknown>;
+  const booking = await loadBookingForInvoice(access, bookingId);
   await assertBookingAccess(access, booking);
 
   const invoiceId = String(booking.invoiceId || invoiceDocId(bookingId));
-  const invoiceSnap = await db.doc(`invoices/${invoiceId}`).get();
-  const invoice = invoiceSnap.exists
-    ? ((invoiceSnap.data() || {}) as Record<string, unknown>)
-    : {};
+  const invoice = await loadInvoiceRecordForBooking(access, invoiceId);
+  const pdfUrl = pickStoredCloudinaryInvoiceUrl(booking, invoice);
+  if (!pdfUrl) {
+    return jsonWithCors(req, { error: "Invoice PDF is not ready yet" }, { status: 404 });
+  }
 
-  const storedUrl = String(
-    invoice.pdfUrl || invoice.invoicePdfUrl || booking.invoicePdfUrl || "",
-  ).trim();
-  if (isCloudinaryUrl(storedUrl)) {
-    const fetched = await fetchCloudinaryPdf(storedUrl);
+  const accept = String(req.headers.get("accept") || "");
+  if (accept.includes("application/json") || req.nextUrl.searchParams.get("format") === "json") {
+    return jsonWithCors(req, { ok: true, pdfUrl, invoicePdfUrl: pdfUrl });
+  }
+
+  if (req.nextUrl.searchParams.get("proxy") === "1") {
+    const fetched = await fetchCloudinaryPdf(pdfUrl);
     if (fetched) {
-          return new NextResponse(new Uint8Array(fetched), {
+      return new NextResponse(new Uint8Array(fetched), {
         status: 200,
         headers: {
           ...apiCorsHeaders(req),
           "Content-Type": "application/pdf",
-          "Content-Disposition": `inline; filename="${encodeURIComponent(String(invoice.invoiceNumber || bookingId))}.pdf"`,
+          "Content-Disposition": `inline; filename="${encodeURIComponent(String(invoice?.invoiceNumber || booking.invoiceNumber || bookingId))}.pdf"`,
           "Cache-Control": "private, max-age=60",
         },
       });
@@ -51,5 +47,8 @@ export async function handleInvoiceFileGet(req: NextRequest) {
     return jsonWithCors(req, { error: "Invoice PDF could not be delivered" }, { status: 502 });
   }
 
-  return jsonWithCors(req, { error: "Invoice PDF is not ready yet" }, { status: 404 });
+  return NextResponse.redirect(pdfUrl, {
+    status: 302,
+    headers: apiCorsHeaders(req),
+  });
 }

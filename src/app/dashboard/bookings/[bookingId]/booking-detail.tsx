@@ -245,7 +245,8 @@ export function BookingDetail({ bookingId }: { bookingId: string }) {
                       setInvoiceError(null);
                       try {
                         const token = await user.getIdToken();
-                        if (!booking.invoiceId && !booking.invoiceNumber) {
+                        let pdfUrl = String(booking.invoicePdfUrl || "").trim();
+                        if (!/res\.cloudinary\.com/i.test(pdfUrl)) {
                           const generated = await fetch("/api/invoices/generate", {
                             method: "POST",
                             headers: {
@@ -260,14 +261,18 @@ export function BookingDetail({ bookingId }: { bookingId: string }) {
                           });
                           const payload = (await generated.json().catch(() => ({}))) as {
                             error?: string;
+                            pdfUrl?: string;
+                            invoicePdfUrl?: string;
                           };
-                          if (!generated.ok) {
+                          pdfUrl = String(payload.pdfUrl || payload.invoicePdfUrl || "").trim();
+                          if (!generated.ok && !/res\.cloudinary\.com/i.test(pdfUrl)) {
                             throw new Error(payload.error || "Invoice is not ready yet");
                           }
                         }
                         await downloadOwnInvoicePdf({
                           bookingId,
                           token,
+                          pdfUrl,
                           fileName: booking.invoiceNumber
                             ? `${booking.invoiceNumber}.pdf`
                             : undefined,

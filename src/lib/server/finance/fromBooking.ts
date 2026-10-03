@@ -22,12 +22,13 @@ function mapLines(items: unknown, fallbackTitle: string): SparePartLine[] {
   return items.map((raw) => {
     const item = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     const quantity = Math.max(1, Math.floor(Number(item.quantity) || 1));
-    const rate = money(item.price ?? item.rate ?? item.amount);
+    const rate = money(item.unitPrice ?? item.price ?? item.rate ?? item.amount);
+    const lineTotal = money(item.lineTotal);
     return {
       title: cleanText(item.title ?? item.serviceName ?? item.name, fallbackTitle),
       quantity,
       rate,
-      amount: money(quantity * rate),
+      amount: lineTotal > 0 ? lineTotal : money(quantity * rate),
     };
   });
 }
