@@ -16,6 +16,7 @@ import {
   isSlotPast,
   type BookingSlotDef,
 } from "@/lib/booking/slots";
+import { technicianMatchesPartnerServices } from "@/lib/booking/partnerServices";
 import {
   computeVisibleSlots,
   isPartnerAssignable,
@@ -70,10 +71,11 @@ export function technicianMatchesServiceCategory(
 ): boolean {
   const categoryId = getServiceCategoryId(service ?? ({} as ServiceDoc));
   if (!categoryId) return true;
-  return techMatchesCategory(
-    technician as unknown as Record<string, unknown>,
-    categoryId,
-  );
+  const data = technician as unknown as Record<string, unknown>;
+  if (!techMatchesCategory(data, categoryId)) return false;
+  const typeId = String(service?.serviceTypeId || "").trim();
+  const scId = String(service?.serviceCategoryId || "").trim();
+  return technicianMatchesPartnerServices(data, categoryId, typeId, scId);
 }
 
 export function technicianHasValidLocation(technician: TechnicianDoc): boolean {
@@ -214,12 +216,14 @@ export function computeAvailableSlots(params: {
   busyByTech: Record<string, BusySlotDoc[]>;
   bookings: Record<string, unknown>[];
   categoryId?: string;
+  serviceTypeId?: string;
   userLat?: number;
   userLng?: number;
   radiusKm?: number;
   allTechnicians?: TechnicianDoc[];
 }): BookingSlotDef[] {
   const categoryId = params.categoryId ?? "";
+  const serviceTypeId = params.serviceTypeId ?? "";
   const allTechnicians = params.allTechnicians ?? params.eligibleTechnicians;
   const userLat = params.userLat ?? 0;
   const userLng = params.userLng ?? 0;
@@ -233,6 +237,7 @@ export function computeAvailableSlots(params: {
 
   const { slots } = computeVisibleSlots({
     categoryId,
+    serviceTypeId,
     userLat,
     userLng,
     dateKey: params.dateKey,

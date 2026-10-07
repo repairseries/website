@@ -5,11 +5,15 @@ import type { Messaging } from "firebase-admin/messaging";
 
 const EXPECTED_PROJECT_ID = "repair-series";
 
-function serverConfigError(message: string): never {
+function serverConfigError(message: string, code = "SERVER_CONFIGURATION_ERROR"): never {
   throw Object.assign(new Error(message), {
     status: 503,
-    code: "SERVER_CONFIGURATION_ERROR",
+    code,
   });
+}
+
+function adminAuthError(message: string): never {
+  return serverConfigError(message, "FIREBASE_ADMIN_AUTH_ERROR");
 }
 
 function unwrapEnvJson(raw: string): string {
@@ -32,11 +36,20 @@ export function expectedFirebaseProjectId(): string {
 }
 
 export function normalizePrivateKey(raw: string): string {
-  return unwrapEnvJson(raw)
-    .replace(/\\n/g, "\n")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .trim();
+  let k = unwrapEnvJson(raw);
+  // Vercel / dotenv may store PEM as literal `\n`, double-escaped `\\n`, or real newlines.
+  for (let i = 0; i < 4 && k.includes("\\n"); i += 1) {
+    k = k.replace(/\\n/g, "\n");
+  }
+  return k.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+}
+
+function readEnv(...keys: string[]): string {
+  for (const key of keys) {
+    const v = process.env[key];
+    if (v != null && String(v).trim()) return String(v);
+  }
+  return "";
 }
 
 export function privateKeyLooksValid(key: string): boolean {
@@ -66,9 +79,19 @@ function parseJsonServiceAccount(raw: string): Record<string, unknown> | null {
 }
 
 export function parseServiceAccount(): ParsedAdminServiceAccount | null {
-  const splitEmail = unwrapEnvJson(process.env.FIREBASE_CLIENT_EMAIL || "");
-  const splitKey = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY || "");
-  const jsonRaw = unwrapEnvJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "");
+  const splitEmail = unwrapEnvJson(
+    readEnv("FIREBASE_CLIENT_EMAIL", "FIREBASE_ADMIN_CLIENT_EMAIL"),
+  );
+  const splitKey = normalizePrivateKey(
+    readEnv("FIREBASE_PRIVATE_KEY", "FIREBASE_ADMIN_PRIVATE_KEY"),
+  );
+  const jsonRaw = unwrapEnvJson(
+    readEnv(
+      "FIREBASE_SERVICE_ACCOUNT_JSON",
+      "FIREBASE_ADMIN_SERVICE_ACCOUNT_JSON",
+      "FIREBASE_ADMIN_SDK_JSON",
+    ),
+  );
 
   if (splitEmail && privateKeyLooksValid(splitKey)) {
     return {
@@ -124,9 +147,19 @@ export function getAdminCredentialDiagnostics(
   extra?: { adminAppInitialized?: boolean },
 ): AdminCredentialDiagnostics {
   const expectedProjectId = expectedFirebaseProjectId();
-  const jsonRaw = unwrapEnvJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "");
-  const splitEmail = unwrapEnvJson(process.env.FIREBASE_CLIENT_EMAIL || "");
-  const splitKey = unwrapEnvJson(process.env.FIREBASE_PRIVATE_KEY || "");
+  const jsonRaw = unwrapEnvJson(
+    readEnv(
+      "FIREBASE_SERVICE_ACCOUNT_JSON",
+      "FIREBASE_ADMIN_SERVICE_ACCOUNT_JSON",
+      "FIREBASE_ADMIN_SDK_JSON",
+    ),
+  );
+  const splitEmail = unwrapEnvJson(
+    readEnv("FIREBASE_CLIENT_EMAIL", "FIREBASE_ADMIN_CLIENT_EMAIL"),
+  );
+  const splitKey = unwrapEnvJson(
+    readEnv("FIREBASE_PRIVATE_KEY", "FIREBASE_ADMIN_PRIVATE_KEY"),
+  );
   const parsed = parseServiceAccount();
   const privateKey = parsed?.privateKey || "";
   const domain = parsed?.clientEmail ? parsed.clientEmail.split("@")[1] || "" : "";
@@ -163,13 +196,23 @@ function getAdminApp(): App {
     logAdminDiagnostics(getAdminCredentialDiagnostics({ adminAppInitialized: true }));
     return getApps()[0]!;
   }
-  const jsonRaw = unwrapEnvJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "");
-  const splitEmail = unwrapEnvJson(process.env.FIREBASE_CLIENT_EMAIL || "");
-  const splitKey = unwrapEnvJson(process.env.FIREBASE_PRIVATE_KEY || "");
+  const jsonRaw = unwrapEnvJson(
+    readEnv(
+      "FIREBASE_SERVICE_ACCOUNT_JSON",
+      "FIREBASE_ADMIN_SERVICE_ACCOUNT_JSON",
+      "FIREBASE_ADMIN_SDK_JSON",
+    ),
+  );
+  const splitEmail = unwrapEnvJson(
+    readEnv("FIREBASE_CLIENT_EMAIL", "FIREBASE_ADMIN_CLIENT_EMAIL"),
+  );
+  const splitKey = unwrapEnvJson(
+    readEnv("FIREBASE_PRIVATE_KEY", "FIREBASE_ADMIN_PRIVATE_KEY"),
+  );
   if (!jsonRaw && !(splitEmail && splitKey)) {
     logAdminDiagnostics(getAdminCredentialDiagnostics({ adminAppInitialized: false }));
     serverConfigError(
-      "Missing Firebase Admin credentials. Set FIREBASE_SERVICE_ACCOUNT_JSON, or FIREBASE_CLIENT_EMAIL plus FIREBASE_PRIVATE_KEY.",
+      "Missing Firebase Admin credentials. Set FIREBASE_SERVICE_ACCOUNT_JSON on Vercel Production (project repair-series), or FIREBASE_CLIENT_EMAIL plus FIREBASE_PRIVATE_KEY with escaped newlines (\\n).",
     );
   }
   const sa = parseServiceAccount();
@@ -203,14 +246,45 @@ function getAdminApp(): App {
     return app;
   } catch (err) {
     logAdminDiagnostics(getAdminCredentialDiagnostics({ adminAppInitialized: false }));
-    serverConfigError(
+    adminAuthError(
       `Invalid Firebase Admin credentials: ${String((err as Error)?.message || "cert failed").slice(0, 120)}`,
     );
   }
 }
 
 export function getAdminDb(): Firestore {
-  return getFirestore(getAdminApp());
+  try {
+    return getFirestore(getAdminApp());
+  } catch (err) {
+    adminAuthError(
+      `Firebase Admin Firestore init failed: ${String((err as Error)?.message || "unknown").slice(0, 120)}`,
+    );
+  }
+}
+
+/** First Firestore read — surfaces revoked/invalid service account keys at runtime. */
+let runtimeAuthVerified = false;
+
+async function verifyAdminRuntimeAccess(db: Firestore): Promise<void> {
+  if (runtimeAuthVerified) return;
+  try {
+    await db.collection("settings").limit(1).get();
+    runtimeAuthVerified = true;
+  } catch (err) {
+    const msg = String((err as Error)?.message || "");
+    if (/UNAUTHENTICATED|invalid authentication|invalid_grant|credential/i.test(msg)) {
+      adminAuthError(
+        `Firebase Admin credentials were rejected by Google: ${msg.slice(0, 120)}`,
+      );
+    }
+    throw err;
+  }
+}
+
+export async function getAdminDbVerified(): Promise<Firestore> {
+  const db = getAdminDb();
+  await verifyAdminRuntimeAccess(db);
+  return db;
 }
 
 export async function probeAdminFirestore(): Promise<{
@@ -232,11 +306,13 @@ export async function probeAdminFirestore(): Promise<{
   } catch (err) {
     const message = String((err as Error)?.message || "Firestore probe failed").slice(0, 180);
     console.info("[Firebase Admin] Firestore probe FAIL", { message });
+    const authRejected = /UNAUTHENTICATED|invalid authentication|invalid_grant/i.test(message);
     return {
       ok: false,
       adminAppInitialized: true,
       firestoreConnectionAttempted: true,
       message,
+      ...(authRejected ? { code: "FIREBASE_ADMIN_AUTH_ERROR" as const } : {}),
     };
   }
 }

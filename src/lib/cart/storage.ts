@@ -15,6 +15,8 @@ export type CartItem = {
   variationTitle?: string;
   slug?: string;
   categoryId?: string;
+  serviceTypeId?: string;
+  serviceCategoryId?: string;
 };
 
 export function buildLineId(serviceId: string, variationId?: string): string {
@@ -62,6 +64,8 @@ export function cartItemFromService(
     variationTitle: variation?.title,
     slug: service.slug,
     categoryId: getServiceCategoryId(service) || undefined,
+    serviceTypeId: service.serviceTypeId,
+    serviceCategoryId: service.serviceCategoryId,
   };
 }
 

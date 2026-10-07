@@ -25,6 +25,13 @@ import {
 import type { ServiceDoc } from "@/lib/booking/types";
 
 import { getAuthClient } from "@/lib/firebase/auth";
+import {
+  bookingPaidAmount,
+  cancellationFirestoreFields,
+  evaluateCancellation,
+  isBookingOnlinePaid,
+  slotStartMsFromBooking,
+} from "@/lib/booking/cancellationPolicy";
 
 const BOOKING_STATUS = {
   NEW: "New",
@@ -121,8 +128,15 @@ export async function isSlotStillAvailable(
 
   const allTechnicians = await loadTechnicians(db);
   const categoryId = getServiceCategoryId(params.service);
+  const serviceTypeId = String(params.service.serviceTypeId || "").trim();
+  const serviceCategoryId = String(params.service.serviceCategoryId || "").trim();
   const eligible = rankPartnersByDistance(
-    fetchTechniciansMatchingCategory(allTechnicians, categoryId),
+    fetchTechniciansMatchingCategory(
+      allTechnicians,
+      categoryId,
+      serviceTypeId,
+      serviceCategoryId,
+    ),
     params.userLat,
     params.userLng,
   );
@@ -136,6 +150,7 @@ export async function isSlotStillAvailable(
 
   return checkSlotStillAvailable({
     categoryId,
+    serviceTypeId,
     userLat: params.userLat,
     userLng: params.userLng,
     dateStr: dateKey,
@@ -169,8 +184,15 @@ export async function assignNearestTechnicianAndLockBusySlot(
   }
 
   const technicians = await loadTechnicians(db);
+  const serviceTypeId = String(params.service.serviceTypeId || "").trim();
+  const serviceCategoryId = String(params.service.serviceCategoryId || "").trim();
   const eligible = rankPartnersByDistance(
-    fetchTechniciansMatchingCategory(technicians, params.categoryId),
+    fetchTechniciansMatchingCategory(
+      technicians,
+      params.categoryId,
+      serviceTypeId,
+      serviceCategoryId,
+    ),
     params.userLat,
     params.userLng,
   );
@@ -315,12 +337,21 @@ export async function cancelBookingByUser(
   if (!cancellable) {
     throw new Error("This booking can no longer be cancelled.");
   }
+  const evalResult = evaluateCancellation({
+    slotStartMs: slotStartMsFromBooking(data),
+    paidAmount: bookingPaidAmount(data),
+    alreadyPaid: isBookingOnlinePaid(data),
+  });
+  if (!evalResult.allowed) {
+    throw new Error("Cancellation is not available at the booking time.");
+  }
 
   await updateDoc(ref, {
     status: BOOKING_STATUS.CANCELLED,
     cancelledBy: "user",
     cancelledAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+    ...cancellationFirestoreFields(evalResult),
   });
 
   await releaseBusySlotForBooking(db, { id: snap.id, ...data });

@@ -4,7 +4,7 @@ import { collection, getDocs, orderBy, query } from "firebase/firestore";
 import { RemoteImage as Image } from "@/components/remote-image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { getCategoryPath } from "@/lib/catalog/slug";
+import { getCategoryPath, getHierarchyPath } from "@/lib/catalog/slug";
 import { getDb } from "@/lib/firebase/firestore";
 
 type CategoryDoc = {
@@ -30,6 +30,7 @@ export function CategoriesGrid() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [categories, setCategories] = useState<CategoryDoc[]>([]);
+  const [serviceTypes, setServiceTypes] = useState<CategoryDoc[]>([]);
 
   const categoriesCol = useMemo(() => {
     const db = getDb();
@@ -46,19 +47,30 @@ export function CategoriesGrid() {
       }
 
       try {
-        if (!categoriesCol) {
+        const db = getDb();
+        if (!db || !categoriesCol) {
           throw new Error(
             "Firebase is not configured. Create `.env.local` with NEXT_PUBLIC_FIREBASE_* values.",
           );
         }
         const q = query(categoriesCol, orderBy("name", "asc"));
-        const snap = await getDocs(q);
-        const rows: CategoryDoc[] = snap.docs.map((d) => ({
+        const [typeSnap, catSnap] = await Promise.all([
+          getDocs(collection(db, "serviceTypes")).catch(() => null),
+          getDocs(q),
+        ]);
+        const rows: CategoryDoc[] = catSnap.docs.map((d) => ({
           id: d.id,
           ...(d.data() as Record<string, unknown>),
         }));
+        const types: CategoryDoc[] = typeSnap
+          ? typeSnap.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as Record<string, unknown>),
+            }))
+          : [];
         if (!mounted) return;
         setCategories(rows);
+        setServiceTypes(types);
       } catch (e) {
         if (!mounted) return;
         setError(
@@ -100,12 +112,14 @@ export function CategoriesGrid() {
     );
   }
 
+  const tiles = serviceTypes.length ? serviceTypes : categories;
+
   return (
     <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      {categories.map((c) => {
+      {tiles.map((c) => {
         const name = getCategoryName(c);
         const img = getCategoryImage(c);
-        const href = getCategoryPath(c);
+        const href = serviceTypes.length ? getHierarchyPath([c]) : getCategoryPath(c);
 
         return (
           <Link

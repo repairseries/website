@@ -33,6 +33,11 @@ export type ServiceDoc = {
   description?: string;
   categoryId?: string;
   category_id?: string;
+  categoryName?: string;
+  serviceTypeId?: string;
+  serviceTypeName?: string;
+  serviceCategoryId?: string;
+  serviceCategoryName?: string;
   slug?: string;
   duration?: string | number;
   keyPoints?: string[];
@@ -85,6 +90,12 @@ export type BookingDoc = {
   serviceName?: string;
   categoryId?: string;
   serviceCategoryId?: string;
+  serviceTypeId?: string;
+  serviceTypeName?: string;
+  categoryName?: string;
+  serviceCategoryName?: string;
+  variationId?: string | null;
+  variationName?: string | null;
   technicianId?: string | null;
   customerName?: string;
   customerPhone?: string;

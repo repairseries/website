@@ -3,6 +3,11 @@ import { jsonWithCors } from "@/lib/api/cors";
 import { adminCredentialFailure, requireApiCaller } from "@/lib/server/auth";
 import { publicErrorMessage } from "@/lib/server/http";
 import { assignPartner, type AssignMode } from "@/lib/server/assignment/assignPartner";
+import {
+  classifyFirebaseAdminErrorCode,
+  clientMessageForAdminFailure,
+  logSafeFirebaseAdminFailure,
+} from "@/lib/firebase/adminErrors";
 
 export async function handleAssignPost(req: NextRequest) {
   try {
@@ -16,8 +21,11 @@ export async function handleAssignPost(req: NextRequest) {
       slotLabel?: string;
       reservedSlotIndices?: number[];
       categoryId?: string;
+      serviceTypeId?: string;
+      serviceCategoryId?: string;
       userLat?: number;
       userLng?: number;
+      excludeTechnicianIds?: string[];
     };
     const result = await assignPartner({
       bookingId: String(body.bookingId || ""),
@@ -29,8 +37,11 @@ export async function handleAssignPost(req: NextRequest) {
       slotLabel: body.slotLabel,
       reservedSlotIndices: body.reservedSlotIndices,
       categoryId: body.categoryId,
+      serviceTypeId: body.serviceTypeId,
+      serviceCategoryId: body.serviceCategoryId,
       userLat: body.userLat,
       userLng: body.userLng,
+      excludeTechnicianIds: body.excludeTechnicianIds,
     });
     return jsonWithCors(req, result);
   } catch (err) {
@@ -38,14 +49,19 @@ export async function handleAssignPost(req: NextRequest) {
     const status = serverCreds
       ? 503
       : Number((err as { status?: number })?.status) || 500;
+    if (serverCreds) {
+      logSafeFirebaseAdminFailure(err, "api/bookings/assign");
+    }
     return jsonWithCors(
       req,
       {
         success: false,
         error: serverCreds
-          ? "Server Firebase Admin credentials were rejected by Google. The booking was not assigned. This is a server configuration error, not a missing partner."
+          ? clientMessageForAdminFailure(err)
           : publicErrorMessage(err, "Could not assign a partner"),
-        code: serverCreds ? "SERVER_CONFIGURATION_ERROR" : (err as { code?: string }).code,
+        code: serverCreds
+          ? classifyFirebaseAdminErrorCode(err)
+          : (err as { code?: string }).code,
       },
       { status },
     );

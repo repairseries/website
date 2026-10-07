@@ -16,6 +16,7 @@ import { isPastDateKey, isSlotPast, resolveBookingSlot } from "@/lib/booking/slo
 import { slotLabelFromIndex } from "@/lib/booking/technician-slots";
 import { getServiceCategoryId } from "@/lib/booking/slot-availability";
 import { loadService } from "@/lib/services/helpers";
+import { evaluateReschedule, slotStartMsFromBooking } from "@/lib/booking/cancellationPolicy";
 
 function scheduledAtFromLocalSlot(dateKey: string, startHour: number): Date {
   const parts = String(dateKey).trim().split("-").map(Number);
@@ -72,6 +73,14 @@ export async function rescheduleBooking(
   const status = String(data.status ?? "").trim();
   if (!["New", "Assigned", "pending"].includes(status)) {
     throw new Error("Only upcoming bookings can be rescheduled.");
+  }
+  const gate = evaluateReschedule({ slotStartMs: slotStartMsFromBooking(data) });
+  if (!gate.allowed) {
+    throw new Error(
+      gate.reason === "AT_SLOT"
+        ? "Reschedule is not available at the booking time."
+        : "Reschedule is only allowed until 2 hours before the slot.",
+    );
   }
 
   const addr = (data.address || {}) as { lat?: number; lng?: number };

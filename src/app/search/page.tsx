@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 export default function SearchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string }>;
+  searchParams: Promise<{ q?: string; type?: string }>;
 }) {
   return <SearchResultsClient searchParams={searchParams} />;
 }

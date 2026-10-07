@@ -102,6 +102,7 @@ export function BookingFlow({ serviceIdOrSlug }: { serviceIdOrSlug: string }) {
   const [appliedCoupon, setAppliedCoupon] = useState<CouponResult | null>(null);
   const [promoError, setPromoError] = useState("");
   const [promoLoading, setPromoLoading] = useState(false);
+  const [paymentPreference, setPaymentPreference] = useState<"PAY_NOW" | "PAY_LATER">("PAY_LATER");
 
   const restoreDraft = useCallback(() => {
     const stored = loadBookingDraft();
@@ -450,6 +451,7 @@ export function BookingFlow({ serviceIdOrSlug }: { serviceIdOrSlug: string }) {
         discountAmount: isRevisitClaim ? 0 : quote?.customer.discount,
         quoteLine: isRevisitClaim ? undefined : quote?.lines[0],
         quantity: 1,
+        paymentPreference: isRevisitClaim ? "PAY_LATER" : paymentPreference,
       });
       clearBookingDraft();
       router.replace(`/dashboard/bookings/${result.bookingId}`);
@@ -900,6 +902,28 @@ export function BookingFlow({ serviceIdOrSlug }: { serviceIdOrSlug: string }) {
               <p className="text-sm text-[#64748b]">
                 You&apos;ll be asked to sign in before confirming.
               </p>
+            ) : null}
+
+            {!isRevisitClaim ? (
+              <div className="grid gap-2 text-sm">
+                <p className="font-semibold text-[#0a0f1c]">Payment preference</p>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked={paymentPreference === "PAY_LATER"}
+                    onChange={() => setPaymentPreference("PAY_LATER")}
+                  />
+                  Pay Later
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked={paymentPreference === "PAY_NOW"}
+                    onChange={() => setPaymentPreference("PAY_NOW")}
+                  />
+                  Pay Now (verified by server after payment)
+                </label>
+              </div>
             ) : null}
 
             <div className="flex gap-3">

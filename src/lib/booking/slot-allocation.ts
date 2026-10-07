@@ -6,6 +6,7 @@
 import type { BookingSlotDef } from "@/lib/booking/slots";
 import { CUSTOMER_BOOKING_SLOTS } from "@/lib/booking/slots";
 import { BOOKING_SLOT_START_HOUR_BY_INDEX } from "@/lib/booking/technician-slots";
+import { technicianMatchesPartnerServices } from "@/lib/booking/partnerServices";
 import type { TechnicianDoc } from "@/lib/booking/types";
 import { getTechnicianLatLng, haversineDistanceKm } from "@/lib/geo";
 
@@ -95,12 +96,18 @@ export function techMatchesCategory(
 export function fetchTechniciansMatchingCategory(
   technicians: TechnicianDoc[],
   categoryId: string,
+  serviceTypeId = "",
+  serviceCategoryId = "",
 ): TechnicianDoc[] {
   const c = String(categoryId ?? "").trim();
+  const typeId = String(serviceTypeId ?? "").trim();
+  const scId = String(serviceCategoryId ?? "").trim();
   if (!c) return [];
-  return technicians.filter((t) =>
-    techMatchesCategory(t as unknown as Record<string, unknown>, c),
-  );
+  return technicians.filter((t) => {
+    const data = t as unknown as Record<string, unknown>;
+    if (!techMatchesCategory(data, c)) return false;
+    return technicianMatchesPartnerServices(data, c, typeId, scId);
+  });
 }
 
 function normalizeVerificationStatus(data: Record<string, unknown>): string {
@@ -112,6 +119,7 @@ function normalizeVerificationStatus(data: Record<string, unknown>): string {
   if (st === "pending" || st === "active" || st === "rejected" || st === "inactive") {
     return st;
   }
+  if (st === "approved") return "active";
   // Shift values such as Available/Busy/Offline must not be treated as account lifecycle.
   return "";
 }
@@ -220,6 +228,7 @@ export type SlotVisibilityDebug = {
  */
 export function computeVisibleSlots(params: {
   categoryId: string;
+  serviceTypeId?: string;
   userLat: number;
   userLng: number;
   dateKey: string;
@@ -227,10 +236,14 @@ export function computeVisibleSlots(params: {
   allTechnicians: TechnicianDoc[];
   busyByTech: Record<string, BusySlotEntry[]>;
 }): { slots: BookingSlotDef[]; debug: SlotVisibilityDebug } {
-  const { categoryId, userLat, userLng, dateKey, radiusKm, allTechnicians, busyByTech } =
+  const { categoryId, serviceTypeId, userLat, userLng, dateKey, radiusKm, allTechnicians, busyByTech } =
     params;
 
-  const categoryMatch = fetchTechniciansMatchingCategory(allTechnicians, categoryId);
+  const categoryMatch = fetchTechniciansMatchingCategory(
+    allTechnicians,
+    categoryId,
+    serviceTypeId ?? "",
+  );
   const eligible = rankPartnersByDistance(categoryMatch, userLat, userLng);
   const ids = eligible.map((t) => t.id);
 
@@ -271,6 +284,7 @@ export function computeVisibleSlots(params: {
 
 export function isSlotStillAvailable(params: {
   categoryId: string;
+  serviceTypeId?: string;
   userLat: number;
   userLng: number;
   dateStr: string;
@@ -284,7 +298,11 @@ export function isSlotStillAvailable(params: {
     return false;
   }
   const eligible = rankPartnersByDistance(
-    fetchTechniciansMatchingCategory(params.allTechnicians, params.categoryId),
+    fetchTechniciansMatchingCategory(
+      params.allTechnicians,
+      params.categoryId,
+      params.serviceTypeId ?? "",
+    ),
     params.userLat,
     params.userLng,
   );

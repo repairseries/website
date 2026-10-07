@@ -53,11 +53,10 @@ describe("customer booking does not call server assign", () => {
     }
   });
 
-  it("User App bookingService uses client allocation", () => {
+  it("User App bookingService uses server assign API after create", () => {
     const src = readFileSync(userAppBookingService, "utf8");
-    assert.equal(src.includes("/api/bookings/assign"), false);
-    assert.equal(src.includes("assignPartnerRequest"), false);
-    assert.equal(src.includes("assignNearestTechnicianAndLockBusySlot"), true);
+    assert.equal(src.includes("assignPartnerRequest"), true);
+    assert.equal(src.includes("/api/bookings/assign"), true);
   });
 
   it("reschedule reserves the new slot before releasing the old slot", () => {

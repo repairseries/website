@@ -19,13 +19,17 @@ export type CatalogCategory = {
   title?: string;
   slug?: string;
   icon?: string;
+  image?: string;
   active?: boolean;
   isActive?: boolean;
 };
 
+export type CatalogServiceType = CatalogCategory;
+
 type CatalogContextValue = {
   services: ServiceDoc[];
   categories: CatalogCategory[];
+  serviceTypes: CatalogServiceType[];
   loading: boolean;
   version: number;
 };
@@ -39,6 +43,7 @@ function isActiveService(s: ServiceDoc): boolean {
 export function CatalogProvider({ children }: { children: ReactNode }) {
   const [services, setServices] = useState<ServiceDoc[]>([]);
   const [categories, setCategories] = useState<CatalogCategory[]>([]);
+  const [serviceTypes, setServiceTypes] = useState<CatalogServiceType[]>([]);
   const [loading, setLoading] = useState(true);
   const [version, setVersion] = useState(0);
 
@@ -53,14 +58,20 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
 
     const load = async () => {
       try {
-        const [catSnap, svcSnap] = await Promise.all([
+        const [catSnap, svcSnap, typeSnap] = await Promise.all([
           getDocs(query(collection(db, "categories"), orderBy("name", "asc"))),
           getDocs(query(collection(db, "services"), orderBy("name", "asc"))),
+          getDocs(collection(db, "serviceTypes")),
         ]);
         if (!mounted) return;
         setCategories(
           catSnap.docs
             .map((d) => ({ id: d.id, ...d.data() }) as CatalogCategory)
+            .filter((c) => c.active !== false && c.isActive !== false),
+        );
+        setServiceTypes(
+          typeSnap.docs
+            .map((d) => ({ id: d.id, ...d.data() }) as CatalogServiceType)
             .filter((c) => c.active !== false && c.isActive !== false),
         );
         setServices(
@@ -87,8 +98,8 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ services, categories, loading, version }),
-    [services, categories, loading, version],
+    () => ({ services, categories, serviceTypes, loading, version }),
+    [services, categories, serviceTypes, loading, version],
   );
 
   return (

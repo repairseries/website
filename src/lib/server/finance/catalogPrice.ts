@@ -72,5 +72,14 @@ export async function resolveCatalogServicePrice(
     throw Object.assign(new Error("Service not found"), { status: 404 });
   }
   const data = (snap.data() || {}) as Record<string, unknown>;
+  try {
+    const varSnap = await db.collection("variations").where("serviceId", "==", serviceId).get();
+    if (!varSnap.empty) {
+      data.variations = varSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data.hasVariations = true;
+    }
+  } catch {
+    /* keep embedded */
+  }
   return resolveCatalogServicePriceFromData(serviceId, data, input);
 }

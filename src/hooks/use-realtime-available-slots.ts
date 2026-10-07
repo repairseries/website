@@ -55,11 +55,13 @@ export function useRealtimeAvailableSlots(params: {
     let allTechnicians: Awaited<ReturnType<typeof loadTechnicians>> = [];
     let busyByTech: Record<string, BusySlotEntry[]> = {};
     const categoryId = getServiceCategoryId(service);
+    const serviceTypeId = String(service.serviceTypeId || "").trim();
 
     const recompute = () => {
       if (cancelled) return;
       const { slots, debug } = computeVisibleSlots({
         categoryId,
+        serviceTypeId,
         userLat: Number(lat),
         userLng: Number(lng),
         dateKey: dateKey.trim(),

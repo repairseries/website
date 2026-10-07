@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  initializeRecaptchaConfig,
   RecaptchaVerifier,
   signInWithCustomToken,
   signInWithPhoneNumber,
@@ -13,15 +14,39 @@ import { parseIndiaMobile } from "@/lib/auth/phone";
 
 export const PHONE_RECAPTCHA_ID = "rs-phone-recaptcha";
 
+const OTP_SEND_TIMEOUT_MS = 90_000;
+
+const RECAPTCHA_UI = {
+  size: "compact" as const,
+  theme: "light" as const,
+};
+
 let verifier: RecaptchaVerifier | null = null;
-let preparePromise: Promise<RecaptchaVerifier> | null = null;
+let captchaVerified = false;
 let confirmation: ConfirmationResult | null = null;
 let sendInFlight = false;
+let mountGeneration = 0;
 
 function requireBrowser() {
   if (typeof window === "undefined" || typeof document === "undefined") {
     throw new Error("Phone login is only available in the browser.");
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function recaptchaHost() {
@@ -32,64 +57,8 @@ function recaptchaHost() {
   return host;
 }
 
-function hostStillHoldsVerifier() {
-  const host = document.getElementById(PHONE_RECAPTCHA_ID);
-  return Boolean(verifier && host && host.childElementCount > 0);
-}
-
-function resetHost() {
-  const host = document.getElementById(PHONE_RECAPTCHA_ID);
-  if (host) host.replaceChildren();
-}
-
-async function createVerifier() {
-  const auth = getAuthClient();
-  if (!auth) throw new Error("Firebase Auth is not configured.");
-  recaptchaHost();
-  resetHost();
-  const next = new RecaptchaVerifier(auth, PHONE_RECAPTCHA_ID, { size: "invisible" });
-  verifier = next;
-  await next.render();
-  return next;
-}
-
-export async function preparePhoneRecaptcha(): Promise<RecaptchaVerifier> {
-  requireBrowser();
-  if (hostStillHoldsVerifier()) return verifier!;
-  if (verifier && !hostStillHoldsVerifier()) {
-    try {
-      verifier.clear();
-    } catch {
-      /* detached */
-    }
-    verifier = null;
-  }
-  if (preparePromise) return preparePromise;
-
-  preparePromise = createVerifier();
-  try {
-    return await preparePromise;
-  } catch (error) {
-    preparePromise = null;
-    const message = error instanceof Error ? error.message : String(error);
-    if (/already been rendered/i.test(message)) {
-      try {
-        verifier?.clear();
-      } catch {
-        /* ignore */
-      }
-      verifier = null;
-      resetHost();
-      preparePromise = createVerifier();
-      try {
-        return await preparePromise;
-      } catch (retryError) {
-        preparePromise = null;
-        throw retryError;
-      }
-    }
-    throw error;
-  }
+export function isPhoneCaptchaVerified() {
+  return captchaVerified;
 }
 
 export function clearPhoneVerifier() {
@@ -100,9 +69,54 @@ export function clearPhoneVerifier() {
     /* ignore */
   }
   verifier = null;
-  preparePromise = null;
+  captchaVerified = false;
   confirmation = null;
-  resetHost();
+  const host = document.getElementById(PHONE_RECAPTCHA_ID);
+  host?.replaceChildren();
+}
+
+/** Mount visible compact reCAPTCHA checkbox. Call when phone step is shown. */
+export async function mountVisiblePhoneRecaptcha(
+  onVerifiedChange?: (verified: boolean) => void,
+): Promise<void> {
+  requireBrowser();
+  const auth = getAuthClient();
+  if (!auth) throw new Error("Firebase Auth is not configured.");
+
+  clearPhoneVerifier();
+  const gen = ++mountGeneration;
+  recaptchaHost().replaceChildren();
+
+  try {
+    await initializeRecaptchaConfig(auth);
+  } catch (error) {
+    console.warn("[phone-auth] initializeRecaptchaConfig failed", error);
+  }
+
+  const next = new RecaptchaVerifier(auth, PHONE_RECAPTCHA_ID, {
+    ...RECAPTCHA_UI,
+    callback: () => {
+      if (gen !== mountGeneration) return;
+      captchaVerified = true;
+      onVerifiedChange?.(true);
+    },
+    "expired-callback": () => {
+      if (gen !== mountGeneration) return;
+      captchaVerified = false;
+      onVerifiedChange?.(false);
+    },
+  });
+
+  verifier = next;
+  try {
+    await next.render();
+  } catch (error) {
+    console.warn("[phone-auth] recaptcha render failed", error);
+    captchaVerified = false;
+    onVerifiedChange?.(false);
+    clearPhoneVerifier();
+    throw error;
+  }
 }
 
 export async function sendCustomerOtp(rawPhone: string) {
@@ -114,32 +128,40 @@ export async function sendCustomerOtp(rawPhone: string) {
   if (!parsed.e164.startsWith("+")) {
     throw new Error("Invalid phone number.");
   }
+  if (!captchaVerified || !verifier) {
+    throw new Error("Please verify that you're not a robot.");
+  }
 
   const auth = getAuthClient();
   if (!auth) throw new Error("Firebase Auth is not configured.");
 
+  const appVerifier = verifier;
   sendInFlight = true;
   try {
-    const appVerifier = await preparePhoneRecaptcha();
-    confirmation = await signInWithPhoneNumber(auth, parsed.e164, appVerifier);
-    return { e164: parsed.e164 };
-  } catch (error) {
-    logPhoneOtpFailure(error, {
-      hasVerifier: Boolean(verifier),
-      e164Length: parsed.e164.length,
-      e164Prefix: parsed.e164.slice(0, 3),
-      hostname: typeof window !== "undefined" ? window.location.hostname : "",
-    });
-    confirmation = null;
-    /* Token is consumed after a failed send. Recreate on the next user click. Do not auto-retry. */
+    confirmation = await withTimeout(
+      signInWithPhoneNumber(auth, parsed.e164, appVerifier),
+      OTP_SEND_TIMEOUT_MS,
+      "Unable to send OTP. Please try again.",
+    );
+    captchaVerified = false;
     try {
-      verifier?.clear();
+      appVerifier.clear();
     } catch {
       /* ignore */
     }
     verifier = null;
-    preparePromise = null;
-    resetHost();
+    recaptchaHost().replaceChildren();
+    return { e164: parsed.e164 };
+  } catch (error) {
+    logPhoneOtpFailure(error, {
+      hasVerifier: Boolean(appVerifier),
+      e164Length: parsed.e164.length,
+      e164Prefix: parsed.e164.slice(0, 3),
+      hostname: typeof window !== "undefined" ? window.location.hostname : "",
+    });
+    console.warn("[phone-auth] sendCustomerOtp failed", error);
+    confirmation = null;
+    clearPhoneVerifier();
     throw toPhoneAuthUserError(error);
   } finally {
     sendInFlight = false;

@@ -56,6 +56,7 @@ export function CartCheckoutClient() {
   const [promoLoading, setPromoLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [paymentPreference, setPaymentPreference] = useState<"PAY_NOW" | "PAY_LATER">("PAY_LATER");
 
   const pricingItems = useMemo(
     () =>
@@ -266,6 +267,7 @@ export function CartCheckoutClient() {
             quoteLine,
             quantity: line.quantity,
             preferredTechnicianId: groupTech || undefined,
+            paymentPreference,
           });
 
           createdIds.push(result.bookingId);
@@ -541,6 +543,25 @@ export function CartCheckoutClient() {
                   </dd>
                 </div>
               </dl>
+              <div className="grid gap-2 text-sm">
+                <p className="font-semibold text-[#0a0f1c]">Payment preference</p>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked={paymentPreference === "PAY_LATER"}
+                    onChange={() => setPaymentPreference("PAY_LATER")}
+                  />
+                  Pay Later
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked={paymentPreference === "PAY_NOW"}
+                    onChange={() => setPaymentPreference("PAY_NOW")}
+                  />
+                  Pay Now (verified by server after payment)
+                </label>
+              </div>
               <div className="flex gap-2">
                 <Button variant="outline" className="rounded-full" onClick={() => setStep(1)}>
                   Back

@@ -12,6 +12,12 @@ import { getCustomerTotal } from "@/lib/booking/finance";
 import { BookingExtrasApproval } from "@/components/booking-extras-approval";
 import { BookingPaymentRequestBanner } from "@/components/booking-payment-request";
 import { cancelBookingByUser } from "@/lib/booking/allocation";
+import {
+  bookingPaidAmount,
+  evaluateCancellation,
+  isBookingOnlinePaid,
+  slotStartMsFromBooking,
+} from "@/lib/booking/cancellationPolicy";
 import { downloadOwnInvoicePdf } from "@/lib/invoice/download-client";
 import {
   getBookingTimeline,
@@ -159,7 +165,13 @@ export function BookingDetail({ bookingId }: { bookingId: string }) {
     booking.convenienceFee ?? booking.customerConvenienceFee,
   ) || 0;
   const statusNorm = String(booking.status ?? "").trim();
-  const canCancel = ["New", "Assigned", "pending"].includes(statusNorm);
+  const cancelEval = evaluateCancellation({
+    slotStartMs: slotStartMsFromBooking(booking as unknown as Record<string, unknown>),
+    paidAmount: bookingPaidAmount(booking as unknown as Record<string, unknown>),
+    alreadyPaid: isBookingOnlinePaid(booking as unknown as Record<string, unknown>),
+  });
+  const canCancel =
+    ["New", "Assigned", "pending"].includes(statusNorm) && cancelEval.allowed;
   const showOtp =
     statusNorm === "Assigned" &&
     booking.otp != null &&
@@ -174,7 +186,14 @@ export function BookingDetail({ bookingId }: { bookingId: string }) {
 
   const onCancel = async () => {
     if (!db || !user) return;
-    if (!window.confirm("Cancel this booking?")) return;
+    if (
+      !window.confirm(
+        cancelEval.reason === "LATE_FEE"
+          ? `Cancellation charge: ₹${cancelEval.chargeAmount}. Refund: ₹${cancelEval.refundAmount}. Continue?`
+          : "Cancel this booking?",
+      )
+    )
+      return;
     setCancelling(true);
     setCancelError(null);
     try {
@@ -404,7 +423,10 @@ export function BookingDetail({ bookingId }: { bookingId: string }) {
             <div className="rounded-[24px] border bg-white p-6 shadow-sm">
               <h2 className="text-lg font-bold text-[#0a0f1c]">Cancel booking</h2>
               <p className="mt-2 text-sm text-[#64748b]">
-                You can cancel while the booking is upcoming or assigned.
+                Free until 2 hours before the slot. After that a 5% cancellation charge applies.
+                {cancelEval.reason === "LATE_FEE"
+                  ? ` Charge ₹${cancelEval.chargeAmount}. Refund ₹${cancelEval.refundAmount}.`
+                  : ""}
               </p>
               {cancelError ? (
                 <p className="mt-2 text-sm text-red-600">{cancelError}</p>

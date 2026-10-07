@@ -78,3 +78,25 @@ export async function resolveCategoryByPath(
     pathSegment,
   );
 }
+
+export async function resolveServiceTypeByPath(
+  db: Firestore,
+  pathSegment: string,
+) {
+  return resolveFromCollection<NamedDoc & { image?: string; imageUrl?: string }>(
+    db,
+    "serviceTypes",
+    pathSegment,
+  );
+}
+
+export async function resolveServiceCategoryByPath(
+  db: Firestore,
+  pathSegment: string,
+) {
+  return resolveFromCollection<NamedDoc & { image?: string; imageUrl?: string }>(
+    db,
+    "serviceCategories",
+    pathSegment,
+  );
+}

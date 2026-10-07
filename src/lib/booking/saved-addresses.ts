@@ -6,6 +6,8 @@ export const MAX_SAVED_ADDRESSES = 3;
 export type SavedAddress = {
   id?: string;
   type?: string;
+  name?: string;
+  isDefault?: boolean;
   fullAddress?: string;
   line1?: string;
   line2?: string;

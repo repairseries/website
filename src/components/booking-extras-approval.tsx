@@ -3,6 +3,7 @@
 import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useState } from "react";
 import { getDb } from "@/lib/firebase/firestore";
+import { totalsAfterAdditionalServices } from "@/lib/pricing/approvalSnapshot";
 
 type ApprovalRequest = {
   status?: string;
@@ -119,19 +120,42 @@ export function BookingExtrasApproval({
       ];
       const addOnLines = Array.isArray(ear.proposedAddOnServices) ? ear.proposedAddOnServices : [];
       const newAddOns = isEdit ? addOnLines : [...addOns, ...addOnLines];
-      const base = Number(data.amount) || 0;
-      const visit = Number(data.visitingCharge) || 0;
       const extrasSum = [...newAddOns, ...mergedAdditional].reduce((s, r) => {
         const qty = Number(r.quantity) || 1;
         return s + (Number(r.price) || 0) * qty;
       }, 0);
-      const total = base + visit + extrasSum;
+      const snapshot = data.approvalPriceSnapshot as
+        | { customerTotal?: number; convenienceFee?: number; visitingCharge?: number; serviceAmount?: number; formulaVersion?: "v3"; discountAmount?: number; items?: never[]; lockedAt?: string }
+        | undefined;
+      const totals = snapshot
+        ? totalsAfterAdditionalServices(
+            {
+              formulaVersion: "v3",
+              serviceAmount: Number(snapshot.serviceAmount) || 0,
+              convenienceFee: Number(snapshot.convenienceFee) || 0,
+              visitingCharge: Number(snapshot.visitingCharge) || 0,
+              discountAmount: Number(snapshot.discountAmount) || 0,
+              customerTotal: Number(snapshot.customerTotal) || 0,
+              items: [],
+              lockedAt: String(snapshot.lockedAt || ""),
+            },
+            extrasSum,
+          )
+        : {
+            finalBookingAmount:
+              Number(data.originalCustomerTotal ?? data.quotedFinalAmount ?? data.customerTotal) + extrasSum,
+          };
+
+      const withStatus = (rows: unknown[]) =>
+        rows.map((row) =>
+          row && typeof row === "object" ? { ...row, approvalStatus: "approved" } : row,
+        );
 
       await updateDoc(ref, {
-        addOnServices: newAddOns,
-        additionalServices: mergedAdditional,
-        totalAmount: total,
-        finalBookingAmount: total,
+        addOnServices: withStatus(newAddOns),
+        additionalServices: withStatus(mergedAdditional),
+        totalAmount: totals.finalBookingAmount,
+        finalBookingAmount: totals.finalBookingAmount,
         extrasApprovalRequest: { ...ear, status: "approved" },
         updatedAt: serverTimestamp(),
       });

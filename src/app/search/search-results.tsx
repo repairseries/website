@@ -13,15 +13,16 @@ import { SectionPromoBanner } from "@/components/home/promo-banner";
 export default function SearchResultsClient({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string }>;
+  searchParams: Promise<{ q?: string; type?: string }>;
 }) {
-  const { q: rawQ } = use(searchParams);
+  const { q: rawQ, type: rawType } = use(searchParams);
   const q = String(rawQ ?? "").trim();
+  const typeId = String(rawType ?? "").trim();
   const { services, categories, loading } = useCatalog();
 
   const results = useMemo(
-    () => searchCatalog(q, services, categories, 50),
-    [q, services, categories],
+    () => searchCatalog(q, services, categories, 50, { serviceTypeId: typeId }),
+    [q, services, categories, typeId],
   );
 
   const empty = !loading && q && results.services.length === 0 && results.categories.length === 0;

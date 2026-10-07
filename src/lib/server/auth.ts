@@ -46,10 +46,12 @@ export function adminCredentialFailure(err: unknown): boolean {
       "",
   );
   return (
-    /16\s*UNAUTHENTICATED|OAuth 2 access token|invalid authentication credentials|ERR_REQUIRE_ESM|jwks-rsa|Failed to load external module/i.test(
+    /16\s*UNAUTHENTICATED|OAuth 2 access token|invalid authentication credentials|invalid_grant|Firebase Admin credentials were rejected|Missing Firebase Admin|Invalid Firebase Admin|Firebase Admin Firestore init failed|ERR_REQUIRE_ESM|jwks-rsa|Failed to load external module/i.test(
       message,
     ) ||
-    /app-deleted|invalid-credential|SERVER_CONFIGURATION_ERROR/i.test(code)
+    /app-deleted|invalid-credential|SERVER_CONFIGURATION_ERROR|FIREBASE_ADMIN_AUTH_ERROR/i.test(
+      code,
+    )
   );
 }
 

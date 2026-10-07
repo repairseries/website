@@ -5,6 +5,7 @@ export type CategoryDoc = {
   name?: string;
   title?: string;
   slug?: string;
+  serviceTypeId?: string;
 };
 
 function norm(s: string): string {
@@ -24,21 +25,34 @@ export function searchCatalog(
   services: ServiceDoc[],
   categories: CategoryDoc[],
   limit = 8,
+  options?: { serviceTypeId?: string },
 ): { services: ServiceDoc[]; categories: CategoryDoc[] } {
   const q = norm(query);
+  const typeId = String(options?.serviceTypeId || "").trim();
+  const scopedServices = typeId
+    ? services.filter((s) => !s.serviceTypeId || String(s.serviceTypeId) === typeId)
+    : services;
+  const scopedCategories = typeId
+    ? categories.filter((c) => !c.serviceTypeId || String(c.serviceTypeId) === typeId)
+    : categories;
   if (!q) {
     return {
-      services: services.slice(0, limit),
-      categories: categories.slice(0, Math.min(4, limit)),
+      services: scopedServices.slice(0, limit),
+      categories: scopedCategories.slice(0, Math.min(4, limit)),
     };
   }
 
-  const matchedServices = services.filter((s) => {
+  const matchedServices = scopedServices.filter((s) => {
     const name = norm(serviceName(s));
-    return name.includes(q);
+    const cat = norm(String(s.categoryName ?? s.serviceCategoryName ?? ""));
+    const type = norm(String(s.serviceTypeName ?? ""));
+    const vars = (Array.isArray(s.variations) ? s.variations : []).some((v) =>
+      norm(String(v.title ?? "")).includes(q),
+    );
+    return name.includes(q) || cat.includes(q) || type.includes(q) || vars;
   });
 
-  const matchedCategories = categories.filter((c) => {
+  const matchedCategories = scopedCategories.filter((c) => {
     const name = norm(categoryName(c));
     return name.includes(q);
   });

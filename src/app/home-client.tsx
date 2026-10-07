@@ -34,6 +34,8 @@ import { getBookPath, getCategoryPath, getComingSoonPath, getServicePath } from 
 import { splitComingSoonByCategory } from "@/lib/catalog/coming-soon";
 import {
   filterHomeSectionsForPlatform,
+  filterHomeSectionsForServiceType,
+  type HomeBannerDoc,
   type HomeSectionDoc,
 } from "@/lib/home-sections/resolve";
 
@@ -65,6 +67,10 @@ export function HomePageClient() {
   const [homeReviews, setHomeReviews] = useState<HomeReview[]>([]);
   const [googleReviewUrl, setGoogleReviewUrl] = useState("");
   const [cmsSections, setCmsSections] = useState<HomeSectionDoc[]>([]);
+  const [serviceTypes, setServiceTypes] = useState<CategoryDoc[]>([]);
+  const [serviceCategories, setServiceCategories] = useState<CategoryDoc[]>([]);
+  const [banners, setBanners] = useState<HomeBannerDoc[]>([]);
+  const [selectedTypeId, setSelectedTypeId] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -75,10 +81,13 @@ export function HomePageClient() {
         const db = getDb();
         if (!db) throw new Error("Firebase is not configured");
 
-        const [catSnap, svcSnap, soonSnap] = await Promise.all([
+        const [catSnap, svcSnap, soonSnap, typeSnap, issueSnap, bannerSnap] = await Promise.all([
           getDocs(query(collection(db, "categories"), orderBy("name", "asc"))),
           getDocs(query(collection(db, "services"), orderBy("name", "asc"))),
           getDocs(query(collection(db, "services"), where("status", "==", "Coming Soon"))),
+          getDocs(collection(db, "serviceTypes")),
+          getDocs(collection(db, "serviceCategories")),
+          getDocs(collection(db, "banners")),
         ]);
 
         const fetchedCategories = catSnap.docs.map((doc) => ({
@@ -104,6 +113,9 @@ export function HomePageClient() {
             .map((doc) => ({ id: doc.id, ...doc.data() }) as ServiceDoc)
             .filter((s) => String((s as { previewStatus?: string }).previewStatus ?? "Active") !== "Inactive"),
         );
+        setServiceTypes(typeSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc));
+        setServiceCategories(issueSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc));
+        setBanners(bannerSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as HomeBannerDoc));
       } catch (error) {
         setLoadError(
           error instanceof Error ? error.message : "Could not load services. Please refresh the page.",
@@ -211,6 +223,16 @@ export function HomePageClient() {
     [comingSoon],
   );
   const useCms = cmsSections.length > 0;
+  useEffect(() => {
+    if (selectedTypeId) return;
+    const first = serviceTypes[0]?.id;
+    if (first) setSelectedTypeId(first);
+  }, [selectedTypeId, serviceTypes]);
+  const selectedType = serviceTypes.find((t) => t.id === selectedTypeId) || serviceTypes[0];
+  const homeLayoutSections = useMemo(
+    () => filterHomeSectionsForServiceType(cmsSections, selectedType?.id),
+    [cmsSections, selectedType?.id],
+  );
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -392,10 +414,15 @@ export function HomePageClient() {
         <DynamicHomeSections
           variant="desktop"
           platform="desktopWeb"
-          sections={cmsSections}
+          sections={homeLayoutSections}
           categories={categories}
           services={services}
           comingSoon={comingSoon}
+          extraCatalog={{ serviceTypes, serviceCategories }}
+          selectedServiceTypeId={selectedType?.id || ""}
+          selectedServiceTypeName={String(selectedType?.title || selectedType?.name || "")}
+          banners={banners}
+          onSelectServiceType={setSelectedTypeId}
         />
       ) : (
         <>

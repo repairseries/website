@@ -3,9 +3,12 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
   Timestamp,
   updateDoc,
+  where,
   type Firestore,
 } from "firebase/firestore";
 import {
@@ -38,10 +41,13 @@ import {
   lockedBookingPriceFields,
   snapshotFromQuoteLine,
 } from "@/lib/pricing/approvalSnapshot";
-import { NO_PARTNER_FOR_SLOT, SLOT_NO_LONGER_AVAILABLE } from "@/lib/booking/messages";
+import { SLOT_NO_LONGER_AVAILABLE } from "@/lib/booking/messages";
+import { bookingPaymentFields, type PaymentPreference } from "@/lib/booking/paymentFields";
+import { findingPartnerPatch, LIFECYCLE } from "@/lib/booking/lifecycle";
 import {
   getServiceName,
   getActiveVariations,
+  normalizeVariation,
 } from "@/lib/services/helpers";
 import {
   canClaimRevisit,
@@ -98,6 +104,7 @@ export async function createCustomerBooking(
     /** This booking's line from a whole-cart quote (category-wise convenience fee). */
     quoteLine?: CheckoutQuoteLine;
     quantity?: number;
+    paymentPreference?: PaymentPreference;
   },
 ): Promise<{ bookingId: string; status: string; technicianId: string | null }> {
   const liveUser = getAuthClient()?.currentUser;
@@ -186,8 +193,23 @@ export async function createCustomerBooking(
   }> = [];
   let servicePrice = 0;
 
-  const activeVariations = getActiveVariations(service);
+  let activeVariations = getActiveVariations(service);
+  if ((!activeVariations.length && service.hasVariations) || draft.variationId) {
+    try {
+      const varSnap = await getDocs(
+        query(collection(db, "variations"), where("serviceId", "==", service.id)),
+      );
+      const extra = varSnap.docs
+        .map((d) => normalizeVariation({ id: d.id, ...d.data() } as Record<string, unknown>))
+        .filter((v): v is NonNullable<typeof v> => Boolean(v));
+      if (extra.length) activeVariations = extra;
+    } catch {
+      /* keep embedded */
+    }
+  }
   const categoryId = getServiceCategoryId(service);
+  const serviceTypeId = String(service.serviceTypeId || "").trim();
+  const serviceCategoryId = String(service.serviceCategoryId || "").trim();
   let priced: CheckoutQuoteLine | null = null;
   let approvalSnapshot = null as ReturnType<typeof snapshotFromQuoteLine> | null;
 
@@ -252,7 +274,10 @@ export async function createCustomerBooking(
     serviceName: getServiceName(service),
     categoryId,
     categoryName,
-    serviceCategoryId: categoryId,
+    serviceTypeId,
+    serviceCategoryId: serviceCategoryId || categoryId,
+    variationId: variationId || null,
+    variationName: selectedVariations[0]?.title || null,
     serviceVariationId: variationId || "",
     serviceVariationTitle: selectedVariations[0]?.title ?? "",
     address: {
@@ -294,6 +319,15 @@ export async function createCustomerBooking(
     notes: params.notes?.trim() ?? (revisitFrom ? "Free revisit claim" : ""),
     addOnServices: [],
     status: BOOKING_STATUS.NEW,
+    lifecycleStatus: LIFECYCLE.BOOKING_CREATED,
+    ...(service as { serviceTypeId?: string }).serviceTypeId
+      ? { serviceTypeId: String((service as { serviceTypeId?: string }).serviceTypeId) }
+      : {},
+    ...bookingPaymentFields({
+      preference: params.paymentPreference || "PAY_LATER",
+      amount: priced ? Number(priced.customer.customerTotal) || 0 : 0,
+      isRevisit: Boolean(revisitFrom),
+    }),
     bookingCode,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -413,26 +447,20 @@ export async function createCustomerBooking(
       alreadyAssigned = false;
     }
     if (!alreadyAssigned) {
-    const slotFail =
-      err.code === "NO_ELIGIBLE_PARTNER" ||
-      err.code === "ALL_TECHS_BUSY" ||
-      err.code === "PAST_SLOT";
-    if (slotFail) {
+    const noPartner =
+      err.code === "NO_ELIGIBLE_PARTNER" || err.code === "ALL_TECHS_BUSY";
+    if (noPartner) {
       try {
         await updateDoc(doc(db, "bookings", bookingId), {
-          status: "Cancelled",
-          cancelledBy: "system",
-          cancelledAt: serverTimestamp(),
+          ...findingPartnerPatch(),
           updatedAt: serverTimestamp(),
         });
       } catch {
-        /* best effort */
+        /* keep committed booking even if this patch fails */
       }
+      return { bookingId, status: BOOKING_STATUS.NEW, technicianId: null };
     }
-    if (err.code === "NO_ELIGIBLE_PARTNER") {
-      throw new Error(NO_PARTNER_FOR_SLOT);
-    }
-    if (err.code === "ALL_TECHS_BUSY" || err.code === "PAST_SLOT") {
+    if (err.code === "PAST_SLOT") {
       throw new Error(SLOT_NO_LONGER_AVAILABLE);
     }
     if (err.code === "ASSIGN_PERMISSION_DENIED" || err.code === "permission-denied") {

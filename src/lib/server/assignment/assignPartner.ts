@@ -1,5 +1,5 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
+import { getAdminDbVerified } from "@/lib/firebase/admin";
 import { assertBookingAccess, type ApiCaller } from "@/lib/server/auth";
 import {
   fetchTechniciansMatchingCategory,
@@ -11,6 +11,12 @@ import {
 import { buildSlotDocId, slotLabelFromIndex } from "@/lib/booking/technician-slots";
 import { getBookingLatLng } from "@/lib/geo";
 import type { TechnicianDoc } from "@/lib/booking/types";
+import {
+  commitMultiCategoryAssignments,
+  planMultiCategoryAssignments,
+  shouldUseMultiCategoryEngine,
+} from "@/lib/server/assignment/multiCategoryAssignment";
+import { normalizeBookingItems } from "@/lib/server/assignment/bookingItems";
 
 export type AssignMode = "nearest" | "specific" | "unassign";
 
@@ -24,8 +30,11 @@ export type AssignPartnerInput = {
   slotLabel?: string;
   reservedSlotIndices?: number[];
   categoryId?: string;
+  serviceTypeId?: string;
+  serviceCategoryId?: string;
   userLat?: number;
   userLng?: number;
+  excludeTechnicianIds?: string[];
 };
 
 export type AssignPartnerResult = {
@@ -83,7 +92,7 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
   const bookingId = String(input.bookingId || "").trim();
   if (!bookingId) fail("Missing bookingId", 400, "INVALID_REQUEST");
 
-  const db = getAdminDb();
+  const db = await getAdminDbVerified();
   const bookingRef = db.doc(`bookings/${bookingId}`);
   const bookingSnap = await bookingRef.get();
   if (!bookingSnap.exists) fail("Booking not found", 404, "NOT_FOUND");
@@ -165,28 +174,82 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
   const coords = getBookingLatLng(booking);
   const userLat = Number(input.userLat ?? coords.lat);
   const userLng = Number(input.userLng ?? coords.lng);
-  const categoryId = String(
-    input.categoryId || booking.categoryId || booking.serviceCategoryId || "",
+  const categoryId = String(input.categoryId || booking.categoryId || "").trim();
+  const serviceTypeId = String(
+    input.serviceTypeId || booking.serviceTypeId || "",
   ).trim();
-  if (!categoryId) fail("Missing service category", 400, "INVALID_REQUEST");
+  const serviceCategoryId = String(
+    input.serviceCategoryId || booking.serviceCategoryId || "",
+  ).trim();
+  if (!categoryId) fail("Missing booking category", 400, "INVALID_REQUEST");
+
+  const prevTech = String(booking.technicianId || "").trim();
+  if (prevTech) {
+    await releaseSlotsForBooking(db, prevTech, bookingId, dateKey, reserved);
+  }
+  const priorAssignments = Array.isArray(booking.partnerAssignments)
+    ? (booking.partnerAssignments as { partnerId?: string }[])
+    : [];
+  for (const row of priorAssignments) {
+    const pid = String(row?.partnerId || "").trim();
+    if (pid && pid !== prevTech) {
+      await releaseSlotsForBooking(db, pid, bookingId, dateKey, reserved);
+    }
+  }
 
   const techSnap = await db.collection("technicians").get();
   const technicians = techSnap.docs.map((docSnap) => ({
     id: docSnap.id,
     ...(docSnap.data() as object),
   })) as TechnicianDoc[];
-  const eligible = rankPartnersByDistance(
-    fetchTechniciansMatchingCategory(technicians, categoryId),
-    userLat,
-    userLng,
-  );
-  if (!eligible.length) {
-    fail("No partner is currently available for this slot.", 422, "NO_ELIGIBLE_PARTNER");
+
+  if (shouldUseMultiCategoryEngine(booking)) {
+    const plan = planMultiCategoryAssignments({
+      booking,
+      technicians,
+      userLat,
+      userLng,
+      excludeTechnicianIds: input.excludeTechnicianIds,
+    });
+    if (!plan) fail("No partner is currently available for this slot.", 422, "NO_ELIGIBLE_PARTNER");
+
+    const committed = await commitMultiCategoryAssignments({
+      db,
+      bookingRef,
+      bookingId,
+      technicians,
+      partnerAssignments: plan,
+      dateKey,
+      slotLabel,
+      reserved,
+    });
+    if (!committed?.primaryTechnicianId) {
+      fail("ALL_TECHS_BUSY", 409, "ALL_TECHS_BUSY");
+    }
+    return {
+      success: true,
+      bookingId,
+      technicianId: committed.primaryTechnicianId,
+      technicianName: committed.primaryTechnicianName,
+      status: "Assigned",
+    };
   }
 
-  const prevTech = String(booking.technicianId || "").trim();
-  if (prevTech) {
-    await releaseSlotsForBooking(db, prevTech, bookingId, dateKey, reserved);
+  const excluded = new Set(
+    (input.excludeTechnicianIds || []).map((id) => String(id || "").trim()).filter(Boolean),
+  );
+  const eligible = rankPartnersByDistance(
+    fetchTechniciansMatchingCategory(
+      technicians,
+      categoryId,
+      serviceTypeId,
+      serviceCategoryId,
+    ),
+    userLat,
+    userLng,
+  ).filter((tech) => !excluded.has(tech.id));
+  if (!eligible.length) {
+    fail("No partner is currently available for this slot.", 422, "NO_ELIGIBLE_PARTNER");
   }
 
   let assigned: AssignPartnerResult | null = null;
@@ -211,6 +274,7 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
         });
       }
       const phone = technicianPhone(tech as unknown as Record<string, unknown>);
+      const lineItems = normalizeBookingItems(booking);
       tx.update(bookingRef, {
         status: "Assigned",
         technicianId: tech.id,
@@ -220,6 +284,23 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
         scheduledSlotLabel: slotLabel,
         scheduledSlotIndex: reserved[0],
         reservedSlotIndices: reserved,
+        lifecycleStatus: "PARTNER_ASSIGNED",
+        assignmentStatus: "OFFERED",
+        assignmentOfferedAt: FieldValue.serverTimestamp(),
+        partnerAssignments: [
+          {
+            partnerId: tech.id,
+            categoryId,
+            serviceItems: lineItems.map((i) => i.itemId),
+            serviceTypeIds: [...new Set(lineItems.map((i) => i.serviceTypeId).filter(Boolean))],
+            serviceCategoryIds: [
+              ...new Set(lineItems.map((i) => i.serviceCategoryId).filter(Boolean)),
+            ],
+            status: "ASSIGNED",
+            assignedAt: FieldValue.serverTimestamp(),
+          },
+        ],
+        multiPartner: false,
         updatedAt: FieldValue.serverTimestamp(),
       });
       assigned = {

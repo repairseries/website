@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,16 +9,15 @@ import {
   AuthField,
   AuthShell,
 } from "@/components/auth/auth-shell";
+import { PhoneRecaptchaBox } from "@/components/auth/phone-recaptcha";
 import {
   clearAuthReturnUrl,
   getAuthReturnUrl,
 } from "@/lib/booking/draft";
 import { OTP_LENGTH, OTP_RESEND_COOLDOWN_SEC, formatNationalInput, parseIndiaMobile } from "@/lib/auth/phone";
 import {
-  PHONE_RECAPTCHA_ID,
   clearPhoneVerifier,
   confirmCustomerOtp,
-  preparePhoneRecaptcha,
   resolveCustomerIdentity,
   sendCustomerOtp,
 } from "@/lib/firebase/auth-phone";
@@ -45,6 +44,12 @@ export function SignInForm() {
   const [created, setCreated] = useState(false);
   const [onLocalhost, setOnLocalhost] = useState(false);
   const [loopbackAuthUrl, setLoopbackAuthUrl] = useState("http://127.0.0.1:3000/auth");
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaMountKey, setCaptchaMountKey] = useState(0);
+
+  const onCaptchaVerifiedChange = useCallback((verified: boolean) => {
+    setCaptchaVerified(verified);
+  }, []);
 
   const returnUrl =
     searchParams.get("return") || getAuthReturnUrl() || "/dashboard/bookings";
@@ -80,6 +85,12 @@ export function SignInForm() {
     return () => window.clearTimeout(t);
   }, [cooldown]);
 
+  const remountCaptcha = () => {
+    clearPhoneVerifier();
+    setCaptchaVerified(false);
+    setCaptchaMountKey((k) => k + 1);
+  };
+
   const finishLogin = async () => {
     if (!db) throw new Error("Firebase is not configured.");
     const resolved = await resolveCustomerIdentity(name);
@@ -105,13 +116,18 @@ export function SignInForm() {
       setError(parsed.error);
       return;
     }
+    if (!captchaVerified) {
+      setError("Please verify that you're not a robot.");
+      return;
+    }
     setLoading(true);
     try {
       await sendCustomerOtp(parsed.national);
       setStep("otp");
       setCooldown(OTP_RESEND_COOLDOWN_SEC);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to send OTP.");
+      setError(err instanceof Error ? err.message : "Unable to send OTP. Please try again.");
+      remountCaptcha();
     } finally {
       setLoading(false);
     }
@@ -173,9 +189,6 @@ export function SignInForm() {
                 autoComplete="tel-national"
                 value={phone}
                 onChange={(ev) => setPhone(formatNationalInput(ev.target.value))}
-                onFocus={() => {
-                  void preparePhoneRecaptcha().catch(() => undefined);
-                }}
                 placeholder="9876543210"
                 className="h-12 flex-1 px-3 text-base outline-none"
               />
@@ -188,8 +201,18 @@ export function SignInForm() {
             placeholder="Optional"
             autoComplete="name"
           />
-          <Button type="submit" size="lg" className="w-full rounded-full" disabled={loading}>
-            {loading ? "Sending OTP..." : "Continue"}
+          <PhoneRecaptchaBox
+            active
+            remountKey={captchaMountKey}
+            onVerifiedChange={onCaptchaVerifiedChange}
+          />
+          <Button
+            type="submit"
+            size="lg"
+            className="w-full rounded-full"
+            disabled={loading || !captchaVerified}
+          >
+            {loading ? "Sending OTP..." : "Send OTP"}
           </Button>
         </form>
       ) : (
@@ -212,7 +235,7 @@ export function SignInForm() {
                 setStep("phone");
                 setOtp("");
                 setError(null);
-                /* Keep the existing RecaptchaVerifier. Do not re-render it. */
+                remountCaptcha();
               }}
             >
               Change number
@@ -221,16 +244,18 @@ export function SignInForm() {
               type="button"
               className="font-medium text-[#f96316] disabled:opacity-50"
               disabled={loading || cooldown > 0}
-              onClick={() => void onSendOtp()}
+              onClick={() => {
+                setStep("phone");
+                setOtp("");
+                setError("Complete CAPTCHA again, then send OTP.");
+                remountCaptcha();
+              }}
             >
               {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend OTP"}
             </button>
           </div>
         </form>
       )}
-
-      {/* Keep the verifier host mounted across phone/OTP steps. Never unmount mid-request. */}
-      <div id={PHONE_RECAPTCHA_ID} className="mt-3 flex justify-center" />
 
       {created ? (
         <p className="mt-4 text-center text-xs text-[#64748b]">New customer profile created.</p>

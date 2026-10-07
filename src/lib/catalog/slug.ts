@@ -82,3 +82,16 @@ export function getCategoryPathLegacy(category: {
   if (name) return `/category/${slugify(name)}`;
   return `/category/${category.id}`;
 }
+
+export function getHierarchyPath(
+  parts: Array<{ slug?: string | null; name?: string | null; title?: string | null; id: string }>,
+): string {
+  const segs = parts.map((p) => {
+    const explicit = String(p.slug ?? "").trim();
+    if (explicit) return explicit;
+    const name = String(p.name ?? p.title ?? "").trim();
+    if (name) return slugify(name);
+    return p.id;
+  });
+  return `/${segs.filter(Boolean).join("/")}`;
+}

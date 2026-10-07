@@ -16,6 +16,7 @@ export {
   getServicePriceDisplay,
   getSelectedVariationPrice,
   serviceHasVariations,
+  normalizeVariation,
 } from "@/lib/services/pricing";
 
 export function getVisitingCharge(_s: ServiceDoc): number {
@@ -27,5 +28,17 @@ export async function loadService(
   serviceIdOrSlug: string,
 ): Promise<ServiceDoc | null> {
   const row = await resolveServiceByPath(db, serviceIdOrSlug);
-  return row as ServiceDoc | null;
+  if (!row) return null;
+  const service = row as ServiceDoc;
+  try {
+    const { collection, getDocs, query, where } = await import("firebase/firestore");
+    const snap = await getDocs(query(collection(db, "variations"), where("serviceId", "==", service.id)));
+    if (!snap.empty) {
+      service.variations = snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as ServiceDoc["variations"];
+      service.hasVariations = true;
+    }
+  } catch {
+    /* keep embedded */
+  }
+  return service;
 }

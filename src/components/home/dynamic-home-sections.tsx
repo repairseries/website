@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Wrench } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { ArrowRight, Search, Wrench } from "lucide-react";
 import {
   filterHomeSectionsForPlatform,
+  normalizeClientLayout,
+  resolveSectionBannerSlides,
   resolveHomeSectionItems,
+  type HomeBannerDoc,
   type HomeSectionDoc,
   type HomeSectionPlatform,
 } from "@/lib/home-sections/resolve";
@@ -14,20 +18,20 @@ import {
   getServicePath,
 } from "@/lib/catalog/slug";
 import { ServicePrice } from "@/components/services/service-price";
-import {
-  PromoBannerSection,
-  SectionPromoBanner,
-} from "@/components/home/promo-banner";
-import { bannerSectionsForHomeCmsSection } from "@/lib/banners/sections";
 
 type CategoryDoc = {
   id: string;
   name?: string;
   title?: string;
+  slug?: string;
   icon?: string;
+  image?: string;
   desc?: string;
   active?: boolean;
   isActive?: boolean;
+  serviceTypeId?: string;
+  categoryId?: string;
+  contentLevel?: string;
 };
 
 type ServiceDoc = {
@@ -42,10 +46,38 @@ type ServiceDoc = {
   isFeatured?: boolean;
 };
 
+type ExtraCatalog = {
+  serviceTypes?: CategoryDoc[];
+  serviceCategories?: CategoryDoc[];
+};
+
+type SectionCatalog = {
+  categories: CategoryDoc[];
+  services: ServiceDoc[];
+  comingSoon: ServiceDoc[];
+  extraCatalog?: ExtraCatalog;
+  selectedServiceTypeId?: string;
+  selectedServiceTypeName?: string;
+  banners?: HomeBannerDoc[];
+  onSelectServiceType?: (id: string) => void;
+};
+
+function sectionContentType(section: HomeSectionDoc) {
+  return String(section.contentType || section.type || "");
+}
+
+function isTileContent(contentType: string) {
+  return (
+    contentType === "categories" ||
+    contentType === "serviceTypes" ||
+    contentType === "serviceCategories"
+  );
+}
+
 function viewAllHref(section: HomeSectionDoc) {
   const custom = String(section.viewAllPath || "").trim();
   if (custom) return custom;
-  if (section.contentType === "categories") return "/categories";
+  if (isTileContent(sectionContentType(section))) return "/categories";
   return "/services";
 }
 
@@ -53,9 +85,25 @@ function isComingSoonMode(section: HomeSectionDoc) {
   return String(section.selectionMode || "").startsWith("coming_soon");
 }
 
+function isServiceTypeItem(section: HomeSectionDoc, item: CategoryDoc | ServiceDoc) {
+  return (
+    sectionContentType(section) === "serviceTypes" ||
+    (item as CategoryDoc).contentLevel === "serviceType"
+  );
+}
+
 function itemHref(section: HomeSectionDoc, item: CategoryDoc | ServiceDoc) {
-  if (section.contentType === "categories") {
+  if (isServiceTypeItem(section, item)) return "#";
+  const contentType = sectionContentType(section);
+  const row = item as CategoryDoc & { serviceId?: string };
+  if (contentType === "serviceCategories" || row.contentLevel === "serviceCategory") {
     return getCategoryPath(item as CategoryDoc);
+  }
+  if (contentType === "categories") {
+    return getCategoryPath(item as CategoryDoc);
+  }
+  if (contentType === "variations" && row.serviceId) {
+    return getServicePath({ id: String(row.serviceId), name: row.name, title: row.title });
   }
   if (isComingSoonMode(section) || String((item as ServiceDoc).status) === "Coming Soon") {
     return getComingSoonPath(item as ServiceDoc);
@@ -71,28 +119,135 @@ function sectionBadge(section: HomeSectionDoc) {
 }
 
 function itemImage(section: HomeSectionDoc, item: CategoryDoc | ServiceDoc) {
-  if (section.contentType === "categories") {
-    return String((item as CategoryDoc).icon || "");
+  if (isTileContent(sectionContentType(section))) {
+    return String((item as CategoryDoc).icon || (item as CategoryDoc).image || "");
   }
   const s = item as ServiceDoc;
   return String(s.homeImage || s.imageUrl || s.image || "");
 }
 
-function CmsBannerSlot({
+function HomeSearchBlock({
+  typeName,
+  typeId,
+}: {
+  typeName?: string;
+  typeId?: string;
+}) {
+  const placeholder = typeName
+    ? `Search ${typeName} services...`
+    : "Search services...";
+  return (
+    <form action="/search" className="mt-5 px-4">
+      {typeId ? <input type="hidden" name="type" value={typeId} /> : null}
+      <div className="flex h-12 items-center gap-2 rounded-2xl bg-white px-4 shadow-sm ring-1 ring-[#E8E4E0]">
+        <Search className="size-5 text-[#C45508]" />
+        <input
+          name="q"
+          placeholder={placeholder}
+          className="h-full min-w-0 flex-1 bg-transparent text-sm font-semibold text-[#1A1A1A] outline-none placeholder:text-[#6B6B6B]"
+        />
+      </div>
+    </form>
+  );
+}
+
+function bannerSlideHref(b: HomeBannerDoc) {
+  const action = String(b.clickAction || "").trim();
+  if (action === "none") return "";
+  if (action === "external") return String(b.redirectLink || "").trim();
+  if (action === "service" && b.serviceId) return `/services/${b.serviceId}`;
+  if (action === "category" && b.categoryId) return `/categories/${b.categoryId}`;
+  if (action === "serviceCategory" && b.serviceCategoryId && b.categoryId) {
+    return `/categories/${b.categoryId}?sc=${encodeURIComponent(b.serviceCategoryId)}`;
+  }
+  const link = String(b.redirectLink || "").trim();
+  return link;
+}
+
+function HomeBannerBlock({
   section,
+  banners,
+  selectedServiceTypeId,
   variant,
+  onSelectServiceType,
 }: {
   section: HomeSectionDoc;
+  banners?: HomeBannerDoc[];
+  selectedServiceTypeId?: string;
   variant: "mobile" | "desktop";
+  onSelectServiceType?: (id: string) => void;
 }) {
-  const keys = bannerSectionsForHomeCmsSection(section);
-  if (!keys.length) return null;
-  if (variant === "desktop") {
-    return <PromoBannerSection section={keys} className="py-0 md:py-4" />;
-  }
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const rows = resolveSectionBannerSlides(section, banners, selectedServiceTypeId);
+  if (!rows.length) return null;
+  const layout = normalizeClientLayout(section.layout);
+  const height = Number(section.settings?.height) || (layout === "single" ? 140 : 188);
+  const list = layout === "single" ? rows.slice(0, 1) : rows;
+  const autoplay = section.settings?.autoplay !== false && list.length > 1;
+  const manualSwipe = section.settings?.manualSwipe !== false;
+  const duration = Number(section.settings?.slideDuration) || 3000;
+
+  useEffect(() => {
+    if (!autoplay || list.length <= 1) return;
+    let index = 0;
+    const tick = () => {
+      index = (index + 1) % list.length;
+      const el = scrollerRef.current?.children[index] as HTMLElement | undefined;
+      el?.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+    };
+    const id = window.setInterval(tick, duration);
+    return () => window.clearInterval(id);
+  }, [autoplay, duration, list.length]);
+
   return (
-    <div className="-mx-4 mb-3">
-      <SectionPromoBanner section={keys} />
+    <div className={variant === "mobile" ? "mt-5 px-4" : "mx-auto max-w-6xl px-4 py-8 lg:px-0"}>
+      <div
+        ref={scrollerRef}
+        className={`flex snap-x snap-mandatory gap-3 scroll-smooth ${
+          manualSwipe ? "overflow-x-auto" : "overflow-hidden"
+        }`}
+      >
+        {list.map((b) => {
+          const action = String(b.clickAction || "").trim();
+          const href = action === "serviceType" ? "" : bannerSlideHref(b);
+          const img = b.websiteImage || b.mobileImage || b.image || b.imageUrl || "";
+          const node = (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={img}
+              alt={b.title || ""}
+              className="w-full rounded-2xl object-cover"
+              style={{ height }}
+            />
+          );
+          if (action === "serviceType" && b.serviceTypeId && onSelectServiceType) {
+            return (
+              <button
+                key={b.id}
+                type="button"
+                className="min-w-full shrink-0 snap-start text-left"
+                onClick={() => onSelectServiceType(b.serviceTypeId!)}
+              >
+                {node}
+              </button>
+            );
+          }
+          if (!href) return <div key={b.id} className="min-w-full shrink-0 snap-start">{node}</div>;
+          const external = href.startsWith("http");
+          if (external) {
+            return (
+              <a key={b.id} href={href} className="min-w-full shrink-0 snap-start" target="_blank" rel="noreferrer">
+                {node}
+              </a>
+            );
+          }
+          return (
+            <Link key={b.id} href={href} className="min-w-full shrink-0 snap-start">
+              {node}
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -116,16 +271,44 @@ function MobileSections({
   categories,
   services,
   comingSoon,
+  extraCatalog,
+  selectedServiceTypeId,
+  selectedServiceTypeName,
+  banners,
+  onSelectServiceType,
 }: {
   sections: HomeSectionDoc[];
-  categories: CategoryDoc[];
-  services: ServiceDoc[];
-  comingSoon: ServiceDoc[];
-}) {
+} & SectionCatalog) {
   return (
     <>
       {sections.map((section) => {
-        if (section.layout === "static" || section.contentType === "static") {
+        const contentType = sectionContentType(section);
+        const layout = normalizeClientLayout(section.layout);
+
+        if (contentType === "search") {
+          return (
+            <HomeSearchBlock
+              key={section.id}
+              typeName={selectedServiceTypeName}
+              typeId={selectedServiceTypeId}
+            />
+          );
+        }
+
+        if (contentType === "banners") {
+          return (
+            <HomeBannerBlock
+              key={section.id}
+              section={section}
+              banners={banners}
+              selectedServiceTypeId={selectedServiceTypeId}
+              variant="mobile"
+              onSelectServiceType={onSelectServiceType}
+            />
+          );
+        }
+
+        if (layout === "static" || contentType === "static") {
           return (
             <section key={section.id} className="mt-7 px-4">
               <h2 className="mb-1 text-lg font-extrabold text-[#1A1A1A]">{section.title}</h2>
@@ -161,11 +344,18 @@ function MobileSections({
           categories,
           services,
           comingSoon,
+          serviceTypes: extraCatalog?.serviceTypes || [],
+          serviceCategories: extraCatalog?.serviceCategories || [],
+          selectedServiceTypeId,
         }) as Array<CategoryDoc | ServiceDoc>;
         if (!items.length) return null;
 
-        const columns = Math.min(4, Math.max(1, Number(section.columns) || 4));
+        const columns =
+          layout === "grid2" ? 2 : Math.min(4, Math.max(1, Number(section.columns) || 4));
         const badge = sectionBadge(section);
+        const tile = isTileContent(contentType);
+        const sliderLayout = layout === "slider" || layout === "autoSlider";
+        const gridLayout = layout === "grid" || layout === "grid2";
 
         return (
           <section key={section.id} className="mt-7 px-4">
@@ -185,14 +375,18 @@ function MobileSections({
                 </Link>
               ) : null}
             </div>
-            <CmsBannerSlot section={section} variant="mobile" />
 
-            {section.layout === "list" ? (
+            {layout === "list" ? (
               <div className="space-y-2">
                 {items.map((item, idx) => (
                   <Link
                     key={item.id}
                     href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                     className="flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-[#E8E4E0]"
                   >
                     <span className="flex size-7 items-center justify-center rounded-full bg-[#FDE7DD] text-xs font-extrabold text-[#C45508]">
@@ -225,13 +419,18 @@ function MobileSections({
               </div>
             ) : null}
 
-            {section.layout === "slider" ? (
+            {sliderLayout ? (
               <div className="flex gap-3 overflow-x-auto pb-2">
                 {items.map((item) =>
-                  section.contentType === "categories" ? (
+                  tile ? (
                     <Link
                       key={item.id}
                       href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                       className="flex w-[88px] shrink-0 flex-col items-center gap-2"
                     >
                       <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-[#E8E4E0]">
@@ -254,6 +453,11 @@ function MobileSections({
                     <Link
                       key={item.id}
                       href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                       className="w-[148px] shrink-0 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-[#E8E4E0]"
                     >
                       <div className="aspect-[4/3] bg-[#F4F5F7]">
@@ -286,13 +490,18 @@ function MobileSections({
               </div>
             ) : null}
 
-            {section.layout === "grid" ? (
+            {gridLayout ? (
               <div className={`grid gap-3 ${mobileGridCols(columns)}`}>
                 {items.map((item) =>
-                  section.contentType === "categories" ? (
+                  tile ? (
                     <Link
                       key={item.id}
                       href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                       className="flex flex-col items-center gap-2"
                     >
                       <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-[#E8E4E0]">
@@ -315,6 +524,11 @@ function MobileSections({
                     <Link
                       key={item.id}
                       href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                       className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-[#E8E4E0]"
                     >
                       <div className="aspect-[4/3] bg-[#F4F5F7]">
@@ -347,22 +561,53 @@ function DesktopSections({
   categories,
   services,
   comingSoon,
+  extraCatalog,
+  selectedServiceTypeId,
+  selectedServiceTypeName,
+  banners,
+  onSelectServiceType,
 }: {
   sections: HomeSectionDoc[];
-  categories: CategoryDoc[];
-  services: ServiceDoc[];
-  comingSoon: ServiceDoc[];
-}) {
+} & SectionCatalog) {
   return (
     <>
       {sections.map((section, sectionIdx) => {
+        const contentType = sectionContentType(section);
+        const layout = normalizeClientLayout(section.layout);
         const tone = sectionIdx % 2 === 0 ? "muted" : "white";
         const shell =
           tone === "muted"
             ? "border-b border-gray-100 bg-[#f8fafc] py-16 lg:py-20"
             : "border-b border-gray-100 bg-white py-16 lg:py-20";
 
-        if (section.layout === "static" || section.contentType === "static") {
+        if (contentType === "search") {
+          return (
+            <section key={section.id} className={shell}>
+              <div className="mx-auto max-w-3xl px-4">
+                <HomeSearchBlock
+                  typeName={selectedServiceTypeName}
+                  typeId={selectedServiceTypeId}
+                />
+              </div>
+            </section>
+          );
+        }
+
+        if (contentType === "banners") {
+          return (
+            <section key={section.id} className={shell}>
+              <HomeBannerBlock
+                section={section}
+                banners={banners}
+                selectedServiceTypeId={selectedServiceTypeId}
+                variant="desktop"
+                onSelectServiceType={onSelectServiceType}
+              />
+            </section>
+          );
+        }
+
+        if (layout === "static" || contentType === "static") {
           return (
             <section key={section.id} className={shell}>
               <div className="mx-auto grid max-w-5xl items-center gap-10 px-4 lg:grid-cols-[1.1fr_0.9fr] lg:px-0">
@@ -410,13 +655,19 @@ function DesktopSections({
           categories,
           services,
           comingSoon,
+          serviceTypes: extraCatalog?.serviceTypes || [],
+          serviceCategories: extraCatalog?.serviceCategories || [],
+          selectedServiceTypeId,
         }) as Array<CategoryDoc | ServiceDoc>;
         if (!items.length) return null;
 
-        const columns = Math.min(4, Math.max(1, Number(section.columns) || 4));
+        const columns =
+          layout === "grid2" ? 2 : Math.min(4, Math.max(1, Number(section.columns) || 4));
         const badge = sectionBadge(section);
-        const isCategory = section.contentType === "categories";
+        const isCategory = isTileContent(contentType);
         const isComing = isComingSoonMode(section);
+        const sliderLayout = layout === "slider" || layout === "autoSlider";
+        const gridLayout = layout === "grid" || layout === "grid2";
 
         return (
           <section key={section.id} id={sectionIdx === 0 ? "services" : undefined} className={shell}>
@@ -443,14 +694,18 @@ function DesktopSections({
                   </Link>
                 ) : null}
               </div>
-              <CmsBannerSlot section={section} variant="desktop" />
 
-              {section.layout === "list" ? (
+              {layout === "list" ? (
                 <div className="grid gap-4 lg:grid-cols-2">
                   {items.map((item, idx) => (
                     <Link
                       key={item.id}
                       href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                       className="group flex items-center gap-4 rounded-[22px] border border-black/5 bg-white p-4 shadow-[0_10px_30px_rgba(0,0,0,0.03)] transition hover:-translate-y-1 hover:shadow-[0_18px_40px_rgba(0,0,0,0.08)]"
                     >
                       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[#fff1e8] text-sm font-extrabold text-[#f96316]">
@@ -488,13 +743,18 @@ function DesktopSections({
                 </div>
               ) : null}
 
-              {section.layout === "slider" ? (
+              {sliderLayout ? (
                 <div className="-mx-4 flex gap-5 overflow-x-auto px-4 pb-3 [scrollbar-width:thin] lg:mx-0 lg:px-0">
                   {items.map((item) =>
                     isCategory ? (
                       <Link
                         key={item.id}
                         href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                         className="group w-[220px] shrink-0 overflow-hidden rounded-[22px] border border-black/5 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.03)] transition hover:-translate-y-1.5 hover:shadow-[0_20px_40px_rgba(0,0,0,0.08)]"
                       >
                         <div className="relative flex h-[150px] items-center justify-center bg-[#f1f5f9]">
@@ -519,6 +779,11 @@ function DesktopSections({
                       <Link
                         key={item.id}
                         href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                         className="group w-[260px] shrink-0 overflow-hidden rounded-[22px] border border-black/5 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.03)] transition hover:-translate-y-1.5 hover:shadow-[0_20px_40px_rgba(0,0,0,0.08)]"
                       >
                         <div className="relative aspect-[4/3] bg-[#f1f5f9]">
@@ -556,13 +821,18 @@ function DesktopSections({
                 </div>
               ) : null}
 
-              {section.layout === "grid" ? (
+              {gridLayout ? (
                 <div className={`grid gap-6 ${desktopGridCols(columns)}`}>
                   {items.map((item) =>
                     isCategory ? (
                       <Link
                         key={item.id}
                         href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                         className="group relative flex flex-col justify-between overflow-hidden rounded-[20px] border border-black/5 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.02)] transition-all duration-300 hover:-translate-y-2 hover:shadow-[0_20px_40px_rgba(0,0,0,0.08)]"
                       >
                         <div className="relative flex h-[200px] w-full items-center justify-center overflow-hidden bg-gray-100">
@@ -596,6 +866,11 @@ function DesktopSections({
                       <Link
                         key={item.id}
                         href={itemHref(section, item)}
+                      onClick={(e) => {
+                        if (!isServiceTypeItem(section, item)) return;
+                        e.preventDefault();
+                        onSelectServiceType?.(String(item.id));
+                      }}
                         className="group overflow-hidden rounded-[20px] border border-black/5 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.02)] transition hover:-translate-y-1.5 hover:shadow-[0_20px_40px_rgba(0,0,0,0.08)]"
                       >
                         <div className="relative aspect-[4/3] bg-[#f1f5f9]">
@@ -645,6 +920,11 @@ export function DynamicHomeSections({
   categories,
   services,
   comingSoon,
+  extraCatalog,
+  selectedServiceTypeId,
+  selectedServiceTypeName,
+  banners,
+  onSelectServiceType,
   variant = "mobile",
   platform,
 }: {
@@ -652,6 +932,11 @@ export function DynamicHomeSections({
   categories: CategoryDoc[];
   services: ServiceDoc[];
   comingSoon: ServiceDoc[];
+  extraCatalog?: ExtraCatalog;
+  selectedServiceTypeId?: string;
+  selectedServiceTypeName?: string;
+  banners?: HomeBannerDoc[];
+  onSelectServiceType?: (id: string) => void;
   /** `mobile` = app-like phone UI; `desktop` = marketing homepage */
   variant?: "mobile" | "desktop";
   /** CMS visibility: mobileWeb / desktopWeb (defaults from variant) */
@@ -662,23 +947,21 @@ export function DynamicHomeSections({
   const visible = filterHomeSectionsForPlatform(sections, resolvedPlatform);
   if (!visible.length) return null;
 
+  const shared = {
+    sections: visible,
+    categories,
+    services,
+    comingSoon,
+    extraCatalog,
+    selectedServiceTypeId,
+    selectedServiceTypeName,
+    banners,
+    onSelectServiceType,
+  };
+
   if (variant === "desktop") {
-    return (
-      <DesktopSections
-        sections={visible}
-        categories={categories}
-        services={services}
-        comingSoon={comingSoon}
-      />
-    );
+    return <DesktopSections {...shared} />;
   }
 
-  return (
-    <MobileSections
-      sections={visible}
-      categories={categories}
-      services={services}
-      comingSoon={comingSoon}
-    />
-  );
+  return <MobileSections {...shared} />;
 }
