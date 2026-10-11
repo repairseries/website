@@ -95,6 +95,19 @@ export function normalizePartnerServices(
   return trimmed;
 }
 
+function categoryApprovedInBlock(
+  block: PartnerServiceTypeBlock,
+  cat: string,
+  sc: string,
+): boolean {
+  if (!cat) return true;
+  const catRow = block.categories.find((c) => c.categoryId === cat);
+  if (!catRow) return false;
+  if (!sc) return true;
+  if (!catRow.serviceCategoryIds.length) return true;
+  return catRow.serviceCategoryIds.some((id) => String(id) === sc);
+}
+
 export function technicianMatchesPartnerServices(
   technician: Record<string, unknown> | null | undefined,
   categoryId: string,
@@ -110,21 +123,16 @@ export function technicianMatchesPartnerServices(
   if (structured.length) {
     if (st) {
       const block = structured.find((b) => b.serviceTypeId === st);
-      if (!block) return false;
-      if (!cat) return true;
-      const catRow = block.categories.find((c) => c.categoryId === cat);
-      if (!catRow) return false;
-      if (!sc) return true;
-      // Category approved with no explicit service-category ids = all service categories under this category.
-      if (!catRow.serviceCategoryIds.length) return true;
-      return catRow.serviceCategoryIds.some((id) => String(id) === sc);
+      if (block) {
+        if (categoryApprovedInBlock(block, cat, sc)) return true;
+      }
+      // Booking serviceTypeId may differ from partner doc; still match by approved category.
+      if (cat && structured.some((b) => categoryApprovedInBlock(b, cat, sc))) return true;
+      if (!cat) return Boolean(block);
+      return false;
     }
     for (const block of structured) {
-      const catRow = block.categories.find((c) => c.categoryId === cat);
-      if (!catRow) continue;
-      if (!sc) return true;
-      if (!catRow.serviceCategoryIds.length) return true;
-      if (catRow.serviceCategoryIds.some((id) => String(id) === sc)) return true;
+      if (categoryApprovedInBlock(block, cat, sc)) return true;
     }
     return false;
   }

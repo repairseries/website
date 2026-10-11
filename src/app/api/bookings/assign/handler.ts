@@ -60,16 +60,18 @@ export async function handleAssignPost(req: NextRequest) {
         message: String((err as Error)?.message || "").slice(0, 200),
       });
     }
+    const code = serverCreds
+      ? classifyFirebaseAdminErrorCode(err)
+      : String((err as { code?: string }).code || "").trim() || undefined;
+    const error = serverCreds
+      ? clientMessageForAdminFailure(err)
+      : publicErrorMessage(err, "Could not assign a partner");
     return jsonWithCors(
       req,
       {
         success: false,
-        error: serverCreds
-          ? clientMessageForAdminFailure(err)
-          : publicErrorMessage(err, "Could not assign a partner"),
-        code: serverCreds
-          ? classifyFirebaseAdminErrorCode(err)
-          : (err as { code?: string }).code,
+        error,
+        code,
       },
       { status },
     );

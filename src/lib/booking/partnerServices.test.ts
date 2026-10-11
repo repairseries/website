@@ -3,6 +3,18 @@ import { describe, it } from "node:test";
 import { technicianMatchesPartnerServices } from "./partnerServices";
 
 describe("technicianMatchesPartnerServices", () => {
+  it("matches by category when booking serviceTypeId differs from partner block", () => {
+    const tech = {
+      services: [
+        {
+          serviceTypeId: "partner-type-id",
+          categories: [{ categoryId: "cat1", serviceCategoryIds: ["sc1"] }],
+        },
+      ],
+    };
+    assert.equal(technicianMatchesPartnerServices(tech, "cat1", "booking-type-id", "sc1"), true);
+  });
+
   it("treats empty serviceCategoryIds as all service categories under approved category", () => {
     const tech = {
       services: [

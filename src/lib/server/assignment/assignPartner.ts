@@ -191,8 +191,8 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
   if (
     input.caller.role !== "admin" &&
     input.caller.role !== "internal" &&
-    input.caller.role !== "customer" &&
-    !ownsBooking
+    !ownsBooking &&
+    input.caller.role !== "customer"
   ) {
     fail("Not allowed", 403, "FORBIDDEN");
   }
@@ -200,12 +200,18 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
   const coords = getBookingLatLng(booking);
   const userLat = Number(input.userLat ?? coords.lat);
   const userLng = Number(input.userLng ?? coords.lng);
-  const categoryId = String(input.categoryId || booking.categoryId || "").trim();
+  const lineItemsForMeta = normalizeBookingItems(booking);
+  const categoryId = String(
+    input.categoryId || booking.categoryId || lineItemsForMeta[0]?.categoryId || "",
+  ).trim();
   const serviceTypeId = String(
-    input.serviceTypeId || booking.serviceTypeId || "",
+    input.serviceTypeId || booking.serviceTypeId || lineItemsForMeta[0]?.serviceTypeId || "",
   ).trim();
   const serviceCategoryId = String(
-    input.serviceCategoryId || booking.serviceCategoryId || "",
+    input.serviceCategoryId ||
+      booking.serviceCategoryId ||
+      lineItemsForMeta[0]?.serviceCategoryId ||
+      "",
   ).trim();
   if (!categoryId) fail("Missing booking category", 400, "INVALID_REQUEST");
 
