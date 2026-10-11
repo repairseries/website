@@ -109,6 +109,10 @@ export async function requireApiCaller(req: NextRequest): Promise<ApiCaller> {
       return { uid, role: "admin" };
     }
     const techSnap = await db.doc(`technicians/${uid}`).get();
+    const customerSnap = await db.doc(`customers/${uid}`).get();
+    if (techSnap.exists && customerSnap.exists) {
+      return { uid, role: "customer" };
+    }
     if (techSnap.exists) {
       return { uid, role: "technician" };
     }
@@ -126,8 +130,15 @@ export async function requireApiCaller(req: NextRequest): Promise<ApiCaller> {
       } catch {
         /* customer cannot read adminUsers */
       }
+      let customerDoc: Record<string, unknown> | null = null;
+      try {
+        customerDoc = await getDocumentWithUserToken(token, `customers/${uid}`);
+      } catch {
+        /* optional */
+      }
       try {
         const techDoc = await getDocumentWithUserToken(token, `technicians/${uid}`);
+        if (techDoc && customerDoc) return { uid, role: "customer" };
         if (techDoc) return { uid, role: "technician" };
       } catch {
         /* not a technician */
@@ -140,21 +151,35 @@ export async function requireApiCaller(req: NextRequest): Promise<ApiCaller> {
   return { uid, role: "customer" };
 }
 
+export function callerOwnsBooking(
+  caller: ApiCaller,
+  booking: Record<string, unknown>,
+): boolean {
+  const ownerId = String(booking.customerId ?? "").trim();
+  return Boolean(ownerId && ownerId === caller.uid);
+}
+
 export function assertBookingAccess(
   caller: ApiCaller,
   booking: Record<string, unknown>,
 ): void {
   if (caller.role === "internal" || caller.role === "admin") return;
-  if (caller.role === "customer" && String(booking.customerId ?? "") === caller.uid) {
-    return;
-  }
+  if (callerOwnsBooking(caller, booking)) return;
+
   if (
     caller.role === "technician" &&
     String(booking.technicianId ?? "") === caller.uid
   ) {
     return;
   }
-  throw Object.assign(new Error("Not allowed"), { status: 403 });
+  const rows = Array.isArray(booking.partnerAssignments) ? booking.partnerAssignments : [];
+  if (
+    caller.role === "technician" &&
+    rows.some((r) => String((r as { partnerId?: string }).partnerId || "") === caller.uid)
+  ) {
+    return;
+  }
+  throw Object.assign(new Error("Not allowed"), { status: 403, code: "FORBIDDEN" });
 }
 
 export function requireAdminOrInternal(caller: ApiCaller): void {

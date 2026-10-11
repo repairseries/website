@@ -1,6 +1,6 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { getAdminDbVerified } from "@/lib/firebase/admin";
-import { assertBookingAccess, type ApiCaller } from "@/lib/server/auth";
+import { assertBookingAccess, callerOwnsBooking, type ApiCaller } from "@/lib/server/auth";
 import {
   fetchTechniciansMatchingCategory,
   isPartnerAssignable,
@@ -167,7 +167,13 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
     });
   }
 
-  if (input.caller.role !== "admin" && input.caller.role !== "internal" && input.caller.role !== "customer") {
+  const ownsBooking = callerOwnsBooking(input.caller, booking);
+  if (
+    input.caller.role !== "admin" &&
+    input.caller.role !== "internal" &&
+    input.caller.role !== "customer" &&
+    !ownsBooking
+  ) {
     fail("Not allowed", 403, "FORBIDDEN");
   }
 
