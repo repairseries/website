@@ -316,7 +316,7 @@ export async function verifyAdminAccessToken(): Promise<{
 export async function probeAdminFirestore(): Promise<{
   ok: boolean;
   adminAppInitialized: boolean;
-  firestoreConnectionAttempted: true;
+  firestoreConnectionAttempted: boolean;
   message: string;
   code?: "FIREBASE_ADMIN_AUTH_ERROR";
   accessTokenOk?: boolean;
