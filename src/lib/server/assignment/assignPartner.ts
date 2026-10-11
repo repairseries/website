@@ -1,4 +1,4 @@
-import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import { getAdminDbVerified } from "@/lib/firebase/admin";
 import { assertBookingAccess, callerOwnsBooking, type ApiCaller } from "@/lib/server/auth";
 import {
@@ -387,7 +387,7 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
               ...new Set(lineItems.map((i) => i.serviceCategoryId).filter(Boolean)),
             ],
             status: "ASSIGNED",
-            assignedAt: FieldValue.serverTimestamp(),
+            assignedAt: Timestamp.now(),
           },
         ],
         multiPartner: false,

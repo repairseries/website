@@ -47,9 +47,16 @@ export async function handleAssignPost(req: NextRequest) {
     return jsonWithCors(req, result);
   } catch (err) {
     const serverCreds = adminCredentialFailure(err);
+    const errMsg = String((err as Error)?.message || "");
+    const firestoreInvalid =
+      /invalid argument|INVALID_ARGUMENT|server timestamp.*array|Cannot use "serverTimestamp"/i.test(
+        errMsg,
+      );
     const status = serverCreds
       ? 503
-      : Number((err as { status?: number })?.status) || 500;
+      : firestoreInvalid
+        ? 400
+        : Number((err as { status?: number })?.status) || 500;
     if (serverCreds) {
       logSafeFirebaseAdminFailure(err, "api/bookings/assign");
     } else {
@@ -62,7 +69,9 @@ export async function handleAssignPost(req: NextRequest) {
     }
     const code = serverCreds
       ? classifyFirebaseAdminErrorCode(err)
-      : String((err as { code?: string }).code || "").trim() || undefined;
+      : firestoreInvalid
+        ? "FIRESTORE_INVALID_DATA"
+        : String((err as { code?: string }).code || "").trim() || undefined;
     const error = serverCreds
       ? clientMessageForAdminFailure(err)
       : publicErrorMessage(err, "Could not assign a partner");

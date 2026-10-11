@@ -1,4 +1,4 @@
-import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import {
   fetchTechniciansMatchingCategory,
   rankPartnersByDistance,
@@ -21,7 +21,7 @@ export type PartnerAssignmentRow = {
   serviceTypeIds?: string[];
   serviceCategoryIds?: string[];
   status: "ASSIGNED" | "OFFERED" | "ACCEPTED" | "DECLINED";
-  assignedAt?: FirebaseFirestore.FieldValue;
+  assignedAt?: FirebaseFirestore.Timestamp;
   distanceKm?: number;
 };
 
@@ -136,7 +136,7 @@ export function planMultiCategoryAssignments(params: {
         ...new Set(group.items.map((i) => i.serviceCategoryId).filter(Boolean)),
       ],
       status: "ASSIGNED",
-      assignedAt: FieldValue.serverTimestamp(),
+      assignedAt: Timestamp.now(),
       ...(dist != null ? { distanceKm: dist } : {}),
     });
   }
@@ -150,6 +150,15 @@ export type MultiAssignResult = {
   primaryTechnicianName: string;
   primaryTechnicianPhone: string;
 };
+
+/** Firestore rejects FieldValue.serverTimestamp() inside array elements. */
+export function partnerAssignmentsForFirestore(rows: PartnerAssignmentRow[]): PartnerAssignmentRow[] {
+  const now = Timestamp.now();
+  return rows.map((row) => ({
+    ...row,
+    assignedAt: row.assignedAt instanceof Timestamp ? row.assignedAt : now,
+  }));
+}
 
 export function technicianPhone(data: Record<string, unknown>): string {
   const candidates = [data.phone, data.mobile, data.contactNumber, data.phoneNumber];
@@ -210,9 +219,10 @@ export async function commitMultiCategoryAssignments(params: {
     const primaryData = (primaryTech || {}) as unknown as Record<string, unknown>;
     const phone = technicianPhone(primaryData);
 
+    const partnerAssignments = partnerAssignmentsForFirestore(params.partnerAssignments);
     tx.update(params.bookingRef, {
       ...multiAssignBookingPatch({
-        partnerAssignments: params.partnerAssignments,
+        partnerAssignments,
         primaryTechnicianId: primary?.partnerId || null,
         primaryTechnicianName: String(primaryData.name ?? "").trim(),
         primaryTechnicianPhone: phone,
@@ -224,7 +234,7 @@ export async function commitMultiCategoryAssignments(params: {
     });
 
     result = {
-      partnerAssignments: params.partnerAssignments,
+      partnerAssignments,
       primaryTechnicianId: primary?.partnerId || null,
       primaryTechnicianName: String(primaryData.name ?? "").trim(),
       primaryTechnicianPhone: phone,
