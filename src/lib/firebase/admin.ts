@@ -287,12 +287,53 @@ export async function getAdminDbVerified(): Promise<Firestore> {
   return db;
 }
 
+/** Calls Google OAuth with the parsed service account — fails if key is revoked or invalid. */
+export async function verifyAdminAccessToken(): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const sa = parseServiceAccount();
+  if (!sa) {
+    return { ok: false, message: "Service account JSON could not be parsed from environment." };
+  }
+  try {
+    const credential = cert({
+      projectId: sa.projectId,
+      clientEmail: sa.clientEmail,
+      privateKey: sa.privateKey,
+    });
+    const token = await credential.getAccessToken();
+    if (!token?.access_token) {
+      return { ok: false, message: "Google returned no access token." };
+    }
+    return { ok: true, message: "Google accepted service account credentials." };
+  } catch (err) {
+    const message = String((err as Error)?.message || "getAccessToken failed").slice(0, 220);
+    return { ok: false, message };
+  }
+}
+
 export async function probeAdminFirestore(): Promise<{
   ok: boolean;
   adminAppInitialized: boolean;
   firestoreConnectionAttempted: true;
   message: string;
+  code?: "FIREBASE_ADMIN_AUTH_ERROR";
+  accessTokenOk?: boolean;
 }> {
+  const tokenCheck = await verifyAdminAccessToken();
+  if (!tokenCheck.ok) {
+    console.info("[Firebase Admin] Access token FAIL", { message: tokenCheck.message });
+    return {
+      ok: false,
+      adminAppInitialized: false,
+      firestoreConnectionAttempted: false,
+      message: tokenCheck.message,
+      code: "FIREBASE_ADMIN_AUTH_ERROR",
+      accessTokenOk: false,
+    };
+  }
+
   const db = getAdminDb();
   try {
     await db.collection("settings").limit(1).get();
@@ -302,6 +343,7 @@ export async function probeAdminFirestore(): Promise<{
       adminAppInitialized: true,
       firestoreConnectionAttempted: true,
       message: "SUCCESS",
+      accessTokenOk: true,
     };
   } catch (err) {
     const message = String((err as Error)?.message || "Firestore probe failed").slice(0, 180);
