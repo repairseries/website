@@ -152,6 +152,22 @@ export function isPartnerAssignable(tech: TechnicianDoc | Record<string, unknown
 }
 
 /** Rank eligible partners by distance. There is no km cap. Missing coords never hide a partner. */
+export function partnerWithinServiceRadius(
+  tech: TechnicianDoc | Record<string, unknown>,
+  userLat: number,
+  userLng: number,
+): boolean {
+  const data = tech as Record<string, unknown>;
+  const radiusRaw = Number(data.serviceRadius ?? data.radiusKm ?? data.serviceRadiusKm ?? 0);
+  if (!Number.isFinite(radiusRaw) || radiusRaw <= 0) return true;
+  const ulat = Number(userLat);
+  const ulng = Number(userLng);
+  if (!Number.isFinite(ulat) || !Number.isFinite(ulng)) return true;
+  const { lat, lng } = getTechnicianLatLng(data);
+  if (lat == null || lng == null) return true;
+  return haversineDistanceKm(ulat, ulng, lat, lng) <= radiusRaw;
+}
+
 export function rankPartnersByDistance(
   technicians: TechnicianDoc[],
   userLat: number,
@@ -163,6 +179,7 @@ export function rankPartnersByDistance(
 
   return technicians
     .filter((tech) => isPartnerAssignable(tech))
+    .filter((tech) => partnerWithinServiceRadius(tech, userLat, userLng))
     .map((tech) => {
       const { lat, lng } = getTechnicianLatLng(
         tech as unknown as Record<string, unknown>,

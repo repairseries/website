@@ -17,6 +17,9 @@ import {
   shouldUseMultiCategoryEngine,
 } from "@/lib/server/assignment/multiCategoryAssignment";
 import { normalizeBookingItems } from "@/lib/server/assignment/bookingItems";
+import { busySlotBlocksPartner } from "@/lib/server/assignment/busySlots";
+import { logAssignment, logAssignmentFailure } from "@/lib/server/assignment/assignmentLog";
+import { sendBookingNotification } from "@/lib/notifications/send";
 
 export type AssignMode = "nearest" | "specific" | "unassign";
 
@@ -55,8 +58,25 @@ function technicianPhone(data: Record<string, unknown>): string {
   return hit != null ? String(hit).trim() : "";
 }
 
-function isBusy(row: Record<string, unknown> | undefined): boolean {
-  return String(row?.status ?? "").toLowerCase() === "busy";
+async function notifyPartnerAssigned(bookingId: string, booking: Record<string, unknown>, techId: string) {
+  try {
+    await sendBookingNotification({
+      eventType: "assigned",
+      bookingId,
+      customerId: String(booking.customerId || ""),
+      technicianId: techId,
+      serviceName: String(booking.serviceName || ""),
+      bookingCode: String(booking.bookingCode || ""),
+      audience: "both",
+    });
+  } catch (err) {
+    logAssignmentFailure({
+      stage: "notify",
+      bookingId,
+      technicianId: techId,
+      message: String((err as Error)?.message || "notify failed").slice(0, 160),
+    });
+  }
 }
 
 
@@ -210,35 +230,71 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
   })) as TechnicianDoc[];
 
   if (shouldUseMultiCategoryEngine(booking)) {
-    const plan = planMultiCategoryAssignments({
-      booking,
-      technicians,
-      userLat,
-      userLng,
-      excludeTechnicianIds: input.excludeTechnicianIds,
-    });
-    if (!plan) fail("No partner is currently available for this slot.", 422, "NO_ELIGIBLE_PARTNER");
-
-    const committed = await commitMultiCategoryAssignments({
-      db,
-      bookingRef,
-      bookingId,
-      technicians,
-      partnerAssignments: plan,
-      dateKey,
-      slotLabel,
-      reserved,
-    });
-    if (!committed?.primaryTechnicianId) {
-      fail("ALL_TECHS_BUSY", 409, "ALL_TECHS_BUSY");
+    const excludeList = [
+      ...(input.excludeTechnicianIds || []).map((id) => String(id || "").trim()).filter(Boolean),
+    ];
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const plan = planMultiCategoryAssignments({
+        booking,
+        technicians,
+        userLat,
+        userLng,
+        excludeTechnicianIds: excludeList,
+      });
+      if (!plan) {
+        logAssignmentFailure({
+          stage: "multi-plan",
+          bookingId,
+          attempt,
+          excludedCount: excludeList.length,
+          reason: "NO_ELIGIBLE_PARTNER",
+        });
+        fail("No partner is currently available for this slot.", 422, "NO_ELIGIBLE_PARTNER");
+      }
+      try {
+        const committed = await commitMultiCategoryAssignments({
+          db,
+          bookingRef,
+          bookingId,
+          technicians,
+          partnerAssignments: plan,
+          dateKey,
+          slotLabel,
+          reserved,
+        });
+        if (!committed?.primaryTechnicianId) {
+          throw Object.assign(new Error("ALL_TECHS_BUSY"), { code: "ALL_TECHS_BUSY", status: 409 });
+        }
+        logAssignment({
+          stage: "multi-success",
+          bookingId,
+          attempt,
+          technicianId: committed.primaryTechnicianId,
+          partnerCount: plan.length,
+        });
+        await notifyPartnerAssigned(bookingId, booking, committed.primaryTechnicianId);
+        return {
+          success: true,
+          bookingId,
+          technicianId: committed.primaryTechnicianId,
+          technicianName: committed.primaryTechnicianName,
+          status: "Assigned",
+        };
+      } catch (err) {
+        const code = String((err as { code?: string }).code || "");
+        if (code !== "ALL_TECHS_BUSY") throw err;
+        for (const row of plan) {
+          if (row.partnerId) excludeList.push(row.partnerId);
+        }
+        logAssignmentFailure({
+          stage: "multi-busy-retry",
+          bookingId,
+          attempt,
+          excludedPartners: plan.map((r) => r.partnerId),
+        });
+      }
     }
-    return {
-      success: true,
-      bookingId,
-      technicianId: committed.primaryTechnicianId,
-      technicianName: committed.primaryTechnicianName,
-      status: "Assigned",
-    };
+    fail("ALL_TECHS_BUSY", 409, "ALL_TECHS_BUSY");
   }
 
   const excluded = new Set(
@@ -255,17 +311,39 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
     userLng,
   ).filter((tech) => !excluded.has(tech.id));
   if (!eligible.length) {
+    logAssignmentFailure({
+      stage: "eligible-empty",
+      bookingId,
+      categoryId,
+      serviceTypeId,
+      serviceCategoryId,
+      technicianPool: technicians.length,
+      reason: "NO_ELIGIBLE_PARTNER",
+    });
     fail("No partner is currently available for this slot.", 422, "NO_ELIGIBLE_PARTNER");
   }
 
-  let assigned: AssignPartnerResult | null = null;
-  await db.runTransaction(async (tx) => {
+  logAssignment({
+    stage: "eligible-ranked",
+    bookingId,
+    eligibleCount: eligible.length,
+    topPartnerId: eligible[0]?.id,
+    categoryId,
+    dateKey,
+    slotIndices: reserved,
+  });
+
+  const assigned = await db.runTransaction(async (tx): Promise<AssignPartnerResult | null> => {
     for (const tech of eligible) {
       const busyRefs = reserved.map((index) =>
         db.doc(`technicians/${tech.id}/busySlots/${buildSlotDocId(dateKey, index)}`),
       );
       const busySnaps = await Promise.all(busyRefs.map((ref) => tx.get(ref)));
-      if (busySnaps.some((snap) => snap.exists && isBusy(snap.data() as Record<string, unknown>))) {
+      if (
+        busySnaps.some((snap) =>
+          busySlotBlocksPartner(snap.data() as Record<string, unknown>, bookingId),
+        )
+      ) {
         continue;
       }
       for (const [i, ref] of busyRefs.entries()) {
@@ -309,18 +387,32 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
         multiPartner: false,
         updatedAt: FieldValue.serverTimestamp(),
       });
-      assigned = {
+      return {
         success: true,
         bookingId,
         technicianId: tech.id,
         technicianName: String(tech.name ?? "").trim() || "",
         status: "Assigned",
       };
-      return;
     }
+    return null;
   });
 
-  if (!assigned) fail("ALL_TECHS_BUSY", 409, "ALL_TECHS_BUSY");
+  if (!assigned) {
+    logAssignmentFailure({
+      stage: "all-busy",
+      bookingId,
+      eligibleCount: eligible.length,
+      reason: "ALL_TECHS_BUSY",
+    });
+    fail("ALL_TECHS_BUSY", 409, "ALL_TECHS_BUSY");
+  }
+  logAssignment({
+    stage: "success",
+    bookingId,
+    technicianId: assigned.technicianId,
+  });
+  await notifyPartnerAssigned(bookingId, booking, String(assigned.technicianId || ""));
   return assigned;
 }
 
@@ -331,6 +423,7 @@ async function authorizeSpecificAssign(
   db: Firestore,
 ) {
   if (caller.role === "admin" || caller.role === "internal") return;
+  if (callerOwnsBooking(caller, booking)) return;
   if (caller.role !== "customer") fail("Not allowed", 403, "FORBIDDEN");
   const current = String(booking.technicianId || "").trim();
   if (current && current === technicianId) return;
@@ -385,7 +478,7 @@ async function lockSpecificTechnician(params: {
     for (const snap of busySnaps) {
       if (!snap.exists) continue;
       const row = snap.data() as Record<string, unknown>;
-      if (isBusy(row) && String(row.bookingId || "") !== bookingId) {
+      if (busySlotBlocksPartner(row, bookingId)) {
         fail("ALL_TECHS_BUSY", 409, "ALL_TECHS_BUSY");
       }
     }

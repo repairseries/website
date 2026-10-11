@@ -8,6 +8,7 @@ import {
   clientMessageForAdminFailure,
   logSafeFirebaseAdminFailure,
 } from "@/lib/firebase/adminErrors";
+import { logAssignmentFailure } from "@/lib/server/assignment/assignmentLog";
 
 export async function handleAssignPost(req: NextRequest) {
   try {
@@ -51,6 +52,13 @@ export async function handleAssignPost(req: NextRequest) {
       : Number((err as { status?: number })?.status) || 500;
     if (serverCreds) {
       logSafeFirebaseAdminFailure(err, "api/bookings/assign");
+    } else {
+      logAssignmentFailure({
+        stage: "api-assign",
+        status,
+        code: (err as { code?: string }).code,
+        message: String((err as Error)?.message || "").slice(0, 200),
+      });
     }
     return jsonWithCors(
       req,

@@ -9,7 +9,7 @@ import { buildSlotDocId } from "@/lib/booking/technician-slots";
 const here = dirname(fileURLToPath(import.meta.url));
 const userAppBookingService = join(
   here,
-  "../../../..",
+  "../../../../",
   "repair-series/src/services/bookingService.js",
 );
 
@@ -56,7 +56,7 @@ describe("customer booking does not call server assign", () => {
   it("User App bookingService uses server assign API after create", () => {
     const src = readFileSync(userAppBookingService, "utf8");
     assert.equal(src.includes("assignPartnerRequest"), true);
-    assert.equal(src.includes("/api/bookings/assign"), true);
+    assert.equal(src.includes("assignCreatedBooking"), true);
   });
 
   it("reschedule reserves the new slot before releasing the old slot", () => {

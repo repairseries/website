@@ -12,6 +12,7 @@ import {
   normalizeBookingItems,
   type NormalizedBookingItem,
 } from "@/lib/server/assignment/bookingItems";
+import { busySlotBlocksPartner } from "@/lib/server/assignment/busySlots";
 
 export type PartnerAssignmentRow = {
   partnerId: string;
@@ -143,10 +144,6 @@ export function planMultiCategoryAssignments(params: {
   return assignments.length ? assignments : null;
 }
 
-function isBusy(row: Record<string, unknown> | undefined): boolean {
-  return String(row?.status ?? "").toLowerCase() === "busy";
-}
-
 export type MultiAssignResult = {
   partnerAssignments: PartnerAssignmentRow[];
   primaryTechnicianId: string | null;
@@ -183,7 +180,7 @@ export async function commitMultiCategoryAssignments(params: {
         const snap = await tx.get(ref);
         if (!snap.exists) continue;
         const row = snap.data() as Record<string, unknown>;
-        if (isBusy(row) && String(row.bookingId || "") !== params.bookingId) {
+        if (busySlotBlocksPartner(row, params.bookingId)) {
           throw Object.assign(new Error("ALL_TECHS_BUSY"), { code: "ALL_TECHS_BUSY", status: 409 });
         }
       }
