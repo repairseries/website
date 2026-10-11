@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const envPath = resolve(root, ".env");
-if (existsSync(envPath)) {
+if (existsSync(envPath)) {   
   const text = readFileSync(envPath, "utf8");
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
