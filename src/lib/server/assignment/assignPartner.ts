@@ -20,6 +20,7 @@ import { normalizeBookingItems } from "@/lib/server/assignment/bookingItems";
 import { busySlotBlocksPartner } from "@/lib/server/assignment/busySlots";
 import { logAssignment, logAssignmentFailure } from "@/lib/server/assignment/assignmentLog";
 import { sendBookingNotification } from "@/lib/notifications/send";
+import { partnerAutoAcceptedLifecycleFields } from "@/lib/booking/lifecycle";
 
 export type AssignMode = "nearest" | "specific" | "unassign";
 
@@ -62,6 +63,15 @@ async function notifyPartnerAssigned(bookingId: string, booking: Record<string, 
   try {
     await sendBookingNotification({
       eventType: "assigned",
+      bookingId,
+      customerId: String(booking.customerId || ""),
+      technicianId: techId,
+      serviceName: String(booking.serviceName || ""),
+      bookingCode: String(booking.bookingCode || ""),
+      audience: "both",
+    });
+    await sendBookingNotification({
+      eventType: "accepted",
       bookingId,
       customerId: String(booking.customerId || ""),
       technicianId: techId,
@@ -374,9 +384,9 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
         scheduledSlotLabel: slotLabel,
         scheduledSlotIndex: reserved[0],
         reservedSlotIndices: reserved,
-        lifecycleStatus: "PARTNER_ASSIGNED",
-        assignmentStatus: "OFFERED",
+        ...partnerAutoAcceptedLifecycleFields(),
         assignmentOfferedAt: FieldValue.serverTimestamp(),
+        assignmentRespondedAt: FieldValue.serverTimestamp(),
         partnerAssignments: [
           {
             partnerId: tech.id,
@@ -386,8 +396,9 @@ export async function assignPartner(input: AssignPartnerInput): Promise<AssignPa
             serviceCategoryIds: [
               ...new Set(lineItems.map((i) => i.serviceCategoryId).filter(Boolean)),
             ],
-            status: "ASSIGNED",
+            status: "ACCEPTED",
             assignedAt: Timestamp.now(),
+            acceptedAt: Timestamp.now(),
           },
         ],
         multiPartner: false,
@@ -509,15 +520,20 @@ async function lockSpecificTechnician(params: {
       scheduledSlotLabel: slotLabel,
       scheduledSlotIndex: slotIndex,
       reservedSlotIndices: reserved,
+      ...partnerAutoAcceptedLifecycleFields(),
+      assignmentOfferedAt: FieldValue.serverTimestamp(),
+      assignmentRespondedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
 
-  return {
-    success: true,
+  const result = {
+    success: true as const,
     bookingId,
     technicianId,
     technicianName,
     status: "Assigned",
   };
+  await notifyPartnerAssigned(bookingId, booking, technicianId);
+  return result;
 }

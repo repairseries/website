@@ -52,3 +52,11 @@ export function partnerOfferedPatch(opts: {
     ],
   };
 }
+
+/** Assignment is auto-accepted when a partner is locked (no manual accept step). */
+export function partnerAutoAcceptedLifecycleFields() {
+  return {
+    lifecycleStatus: LIFECYCLE.PARTNER_ACCEPTED,
+    assignmentStatus: ASSIGNMENT_STATUS.ACCEPTED,
+  };
+}

@@ -79,10 +79,27 @@ export function getBookingTimeline(booking: BookingDoc): TimelineStep[] {
   const started = booking.serviceStartedAt?.toDate?.() ?? null;
   const completed = booking.completedAt?.toDate?.() ?? null;
 
+  const assignmentAccepted =
+    String(booking.assignmentStatus ?? "").toUpperCase() === "ACCEPTED" ||
+    String(booking.lifecycleStatus ?? "").toUpperCase() === "PARTNER_ACCEPTED";
+  const acceptedAt =
+    booking.assignmentRespondedAt?.toDate?.() ??
+    booking.assignmentOfferedAt?.toDate?.() ??
+    (assignmentAccepted ? assigned : null);
+
   const steps: TimelineStep[] = [
     { key: "booked", label: "Booked", done: !!created, active: status === "new" || status === "pending", at: created },
-    { key: "accepted", label: "Accepted", done: status !== "cancelled" && status !== "canceled" && !!created, active: status === "pending", at: created },
-    { key: "assigned", label: "Technician Assigned", done: !!booking.technicianId, active: status === "assigned", at: assigned },
+    {
+      key: "accepted",
+      label: "Partner confirmed",
+      done:
+        status !== "cancelled" &&
+        status !== "canceled" &&
+        (assignmentAccepted || !!booking.technicianId),
+      active: status === "assigned" && assignmentAccepted && !started,
+      at: acceptedAt,
+    },
+    { key: "assigned", label: "Technician Assigned", done: !!booking.technicianId, active: status === "assigned" && !assignmentAccepted, at: assigned },
     { key: "on_way", label: "On The Way", done: !!booking.arrivalVerified, active: status === "assigned" && !booking.arrivalVerified, at: onTheWay },
     { key: "in_progress", label: "In Progress", done: status === "inprogress" || status === "completed", active: status === "inprogress" || status === "started", at: started },
     { key: "completed", label: "Completed", done: status === "completed", active: status === "completed", at: completed },

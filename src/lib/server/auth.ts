@@ -159,26 +159,39 @@ export function callerOwnsBooking(
   return Boolean(ownerId && ownerId === caller.uid);
 }
 
+/** True when this uid is the primary or multi-partner assignee (any caller role). */
+export function callerIsAssignedPartner(
+  caller: ApiCaller,
+  booking: Record<string, unknown>,
+): boolean {
+  const uid = String(caller.uid || "").trim();
+  if (!uid) return false;
+  const techId = String(booking.technicianId ?? "").trim();
+  if (techId && techId === uid) return true;
+  const rows = Array.isArray(booking.partnerAssignments) ? booking.partnerAssignments : [];
+  return rows.some(
+    (r) => String((r as { partnerId?: string }).partnerId || "").trim() === uid,
+  );
+}
+
+/** Partner job actions (OTP, cash, etc.) — not role-gated; dual customer+technician profiles use customer role. */
+export function requirePartnerBookingAccess(
+  caller: ApiCaller,
+  booking: Record<string, unknown>,
+): void {
+  if (caller.role === "admin" || caller.role === "internal") return;
+  if (!callerIsAssignedPartner(caller, booking)) {
+    throw Object.assign(new Error("Not allowed"), { status: 403, code: "FORBIDDEN" });
+  }
+}
+
 export function assertBookingAccess(
   caller: ApiCaller,
   booking: Record<string, unknown>,
 ): void {
   if (caller.role === "internal" || caller.role === "admin") return;
   if (callerOwnsBooking(caller, booking)) return;
-
-  if (
-    caller.role === "technician" &&
-    String(booking.technicianId ?? "") === caller.uid
-  ) {
-    return;
-  }
-  const rows = Array.isArray(booking.partnerAssignments) ? booking.partnerAssignments : [];
-  if (
-    caller.role === "technician" &&
-    rows.some((r) => String((r as { partnerId?: string }).partnerId || "") === caller.uid)
-  ) {
-    return;
-  }
+  if (callerIsAssignedPartner(caller, booking)) return;
   throw Object.assign(new Error("Not allowed"), { status: 403, code: "FORBIDDEN" });
 }
 

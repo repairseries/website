@@ -6,7 +6,7 @@ import {
 import { technicianMatchesPartnerServices } from "@/lib/booking/partnerServices";
 import { buildSlotDocId, slotLabelFromIndex } from "@/lib/booking/technician-slots";
 import type { TechnicianDoc } from "@/lib/booking/types";
-import { ASSIGNMENT_STATUS, LIFECYCLE } from "@/lib/booking/lifecycle";
+import { ASSIGNMENT_STATUS, LIFECYCLE, partnerAutoAcceptedLifecycleFields } from "@/lib/booking/lifecycle";
 import {
   groupBookingItemsByCategory,
   normalizeBookingItems,
@@ -22,6 +22,7 @@ export type PartnerAssignmentRow = {
   serviceCategoryIds?: string[];
   status: "ASSIGNED" | "OFFERED" | "ACCEPTED" | "DECLINED";
   assignedAt?: FirebaseFirestore.Timestamp;
+  acceptedAt?: FirebaseFirestore.Timestamp;
   distanceKm?: number;
 };
 
@@ -135,8 +136,9 @@ export function planMultiCategoryAssignments(params: {
       serviceCategoryIds: [
         ...new Set(group.items.map((i) => i.serviceCategoryId).filter(Boolean)),
       ],
-      status: "ASSIGNED",
+      status: "ACCEPTED",
       assignedAt: Timestamp.now(),
+      acceptedAt: Timestamp.now(),
       ...(dist != null ? { distanceKm: dist } : {}),
     });
   }
@@ -156,7 +158,9 @@ export function partnerAssignmentsForFirestore(rows: PartnerAssignmentRow[]): Pa
   const now = Timestamp.now();
   return rows.map((row) => ({
     ...row,
+    status: row.status === "ASSIGNED" || row.status === "OFFERED" ? "ACCEPTED" : row.status,
     assignedAt: row.assignedAt instanceof Timestamp ? row.assignedAt : now,
+    acceptedAt: row.acceptedAt instanceof Timestamp ? row.acceptedAt : now,
   }));
 }
 
@@ -256,9 +260,9 @@ export function multiAssignBookingPatch(result: {
     technicianId: result.primaryTechnicianId,
     technicianName: result.primaryTechnicianName,
     ...(result.primaryTechnicianPhone ? { technicianPhone: result.primaryTechnicianPhone } : {}),
-    lifecycleStatus: LIFECYCLE.PARTNER_ASSIGNED,
-    assignmentStatus: ASSIGNMENT_STATUS.OFFERED,
+    ...partnerAutoAcceptedLifecycleFields(),
     assignmentOfferedAt: FieldValue.serverTimestamp(),
+    assignmentRespondedAt: FieldValue.serverTimestamp(),
     partnerAssignments: result.partnerAssignments,
     multiPartner,
     updatedAt: FieldValue.serverTimestamp(),

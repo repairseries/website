@@ -2,7 +2,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { NextRequest } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { apiOptions, jsonWithCors, publicErrorMessage } from "@/lib/server/http";
-import { assertBookingAccess, requireApiCaller } from "@/lib/server/auth";
+import { requireApiCaller, requirePartnerBookingAccess } from "@/lib/server/auth";
 import { applyVerifiedPayment } from "@/lib/payments/applyVerifiedPayment";
 import { bookingPayableAmount } from "@/lib/payments/bookingAmount";
 
@@ -15,9 +15,6 @@ export function OPTIONS(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const caller = await requireApiCaller(req);
-    if (caller.role !== "technician" && caller.role !== "admin" && caller.role !== "internal") {
-      throw Object.assign(new Error("Not allowed"), { status: 403 });
-    }
 
     const body = (await req.json().catch(() => ({}))) as { bookingId?: string };
     const bookingId = String(body.bookingId || "").trim();
@@ -33,18 +30,7 @@ export async function POST(req: NextRequest) {
     }
     const booking = (snap.data() || {}) as Record<string, unknown>;
 
-    if (caller.role === "technician") {
-      const techId = String(booking.technicianId || "").trim();
-      const rows = Array.isArray(booking.partnerAssignments) ? booking.partnerAssignments : [];
-      const allowed =
-        techId === caller.uid ||
-        rows.some((r) => String((r as { partnerId?: string }).partnerId || "") === caller.uid);
-      if (!allowed) {
-        throw Object.assign(new Error("Not allowed"), { status: 403 });
-      }
-    } else {
-      assertBookingAccess(caller, booking);
-    }
+    requirePartnerBookingAccess(caller, booking);
 
     const amount = bookingPayableAmount(booking);
     const result = await applyVerifiedPayment(db, {
