@@ -112,6 +112,16 @@ export type BookingDoc = {
   scheduleDateKey?: string;
   scheduleSlotIndex?: number;
   status?: string;
+  lifecycleStatus?: string;
+  assignmentStatus?: string;
+  assignmentOfferedAt?: { toDate?: () => Date };
+  assignmentRespondedAt?: { toDate?: () => Date };
+  partnerAssignments?: Array<{
+    partnerId?: string;
+    categoryId?: string;
+    status?: string;
+    serviceItems?: string[];
+  }>;
   amount?: number;
   serviceSubtotal?: number;
   serviceAmount?: number;
