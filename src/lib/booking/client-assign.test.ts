@@ -41,16 +41,16 @@ describe("busy slot document ids", () => {
   });
 });
 
-describe("customer booking does not call server assign", () => {
-  it("Website create/reschedule use client Firestore allocation", () => {
+describe("customer booking uses server assign (same as Expo app)", () => {
+  it("Website create/reschedule call assign API helpers", () => {
     const create = readFileSync(join(here, "create-booking.ts"), "utf8");
     const reschedule = readFileSync(join(here, "reschedule.ts"), "utf8");
     for (const src of [create, reschedule]) {
-      assert.equal(src.includes("/api/bookings/assign"), false);
-      assert.equal(src.includes("requestAssignPartner"), false);
+      assert.equal(src.includes("assignNearestPartnerForBooking"), true);
       assert.equal(src.includes("firebase-admin"), false);
-      assert.equal(src.includes("assignNearestTechnicianAndLockBusySlot"), true);
+      assert.equal(src.includes("assignNearestTechnicianAndLockBusySlot"), false);
     }
+    assert.equal(reschedule.includes("assignSpecificPartnerForBooking"), true);
   });
 
   it("User App bookingService uses server assign API after create", () => {
@@ -59,21 +59,10 @@ describe("customer booking does not call server assign", () => {
     assert.equal(src.includes("assignCreatedBooking"), true);
   });
 
-  it("reschedule reserves the new slot before releasing the old slot", () => {
+  it("reschedule releases the old slot after server assign", () => {
     const website = readFileSync(join(here, "reschedule.ts"), "utf8");
-    const app = readFileSync(userAppBookingService, "utf8");
-    const start = app.indexOf("export async function rescheduleBooking");
-    const next = app.indexOf("\nexport async function", start + 10);
-    const appReschedule = app.slice(start, next > 0 ? next : app.length);
-    for (const src of [website, appReschedule]) {
-      const lockAt = src.indexOf("assignExistingTechnicianAndLockBusySlot");
-      const nearestAt = src.indexOf("assignNearestTechnicianAndLockBusySlot");
-      const lockBusy = src.indexOf("lockBusySlotForTechnician");
-      const firstLock = Math.min(
-        ...[lockAt, nearestAt, lockBusy].map((n) => (n > -1 ? n : Number.POSITIVE_INFINITY)),
-      );
-      const releaseAt = src.indexOf("releaseBusySlotForBooking");
-      assert.ok(Number.isFinite(firstLock) && firstLock < releaseAt);
-    }
+    const assignAt = website.indexOf("await assignNearestPartnerForBooking");
+    const releaseAt = website.indexOf("await releaseBusySlotForBooking");
+    assert.ok(assignAt > -1 && releaseAt > assignAt);
   });
 });

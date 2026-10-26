@@ -1,4 +1,8 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import {
+  postPartnerWalletInTransaction,
+  resolvePartnerIdFromBooking,
+} from "@/lib/payments/partnerWallet";
 
 function money(value: unknown): number {
   const n = Number(value);
@@ -58,23 +62,26 @@ export async function applyVerifiedPayment(
     }
 
     const status = input.method === "CASH" ? "CASH_COLLECTED" : "PAID";
+    const paymentPatch = {
+      ...payment,
+      status,
+      method: input.method,
+      amount: paid || expected,
+      razorpayOrderId: input.razorpayOrderId ?? payment.razorpayOrderId ?? null,
+      razorpayPaymentId: input.razorpayPaymentId ?? payment.razorpayPaymentId ?? null,
+      paidAt: FieldValue.serverTimestamp(),
+      verifiedAt: FieldValue.serverTimestamp(),
+    };
+
     tx.update(bookingRef, {
-      payment: {
-        ...payment,
-        status,
-        method: input.method,
-        amount: paid || expected,
-        razorpayOrderId: input.razorpayOrderId ?? payment.razorpayOrderId ?? null,
-        razorpayPaymentId: input.razorpayPaymentId ?? payment.razorpayPaymentId ?? null,
-        paidAt: FieldValue.serverTimestamp(),
-        verifiedAt: FieldValue.serverTimestamp(),
-      },
+      payment: paymentPatch,
       paymentStatus: input.method === "CASH" ? "cash_collected" : "paid",
       paymentRequired: false,
       paymentMethod: input.method === "CASH" ? "cash" : "online",
       paidAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+
     tx.set(eventRef, {
       bookingId: input.bookingId,
       method: input.method,
@@ -83,6 +90,21 @@ export async function applyVerifiedPayment(
       processedAt: FieldValue.serverTimestamp(),
     });
     applied = true;
+
+    const partnerId = resolvePartnerIdFromBooking(data);
+    if (partnerId) {
+      await postPartnerWalletInTransaction(db, tx, {
+        partnerId,
+        bookingId: input.bookingId,
+        method: input.method,
+        paymentEventKey: input.idempotencyKey,
+        booking: {
+          ...data,
+          payment: paymentPatch,
+          paymentStatus: input.method === "CASH" ? "cash_collected" : "paid",
+        },
+      });
+    }
   });
 
   return { applied, bookingId: input.bookingId };

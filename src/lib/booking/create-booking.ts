@@ -13,9 +13,9 @@ import {
 } from "firebase/firestore";
 import {
   assignExistingTechnicianAndLockBusySlot,
-  assignNearestTechnicianAndLockBusySlot,
   isSlotStillAvailable,
 } from "@/lib/booking/allocation";
+import { assignNearestPartnerForBooking } from "@/lib/booking/assign-api";
 import { buildFullAddress, addressFormToBookingAddress } from "@/lib/booking/address";
 import { generateBookingCode } from "@/lib/booking/booking-code";
 import { resolveBookingSlot, isSlotPast, isPastDateKey } from "@/lib/booking/slots";
@@ -424,15 +424,16 @@ export async function createCustomerBooking(
         /* best effort */
       }
     } else {
-      await assignNearestTechnicianAndLockBusySlot(db, {
+      await assignNearestPartnerForBooking({
         bookingId,
-        categoryId,
-        service,
-        userLat,
-        userLng,
         dateStr: draft.dateKey,
         slotIndex: slot.slotIndex,
         slotLabel,
+        categoryId,
+        serviceTypeId,
+        serviceCategoryId: serviceCategoryId || categoryId,
+        userLat,
+        userLng,
       });
     }
   } catch (e) {

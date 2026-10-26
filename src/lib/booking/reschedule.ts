@@ -6,11 +6,11 @@ import {
   updateDoc,
   type Firestore,
 } from "firebase/firestore";
+import { releaseBusySlotForBooking } from "@/lib/booking/allocation";
 import {
-  assignExistingTechnicianAndLockBusySlot,
-  assignNearestTechnicianAndLockBusySlot,
-  releaseBusySlotForBooking,
-} from "@/lib/booking/allocation";
+  assignNearestPartnerForBooking,
+  assignSpecificPartnerForBooking,
+} from "@/lib/booking/assign-api";
 import { getAuthClient } from "@/lib/firebase/auth";
 import { isPastDateKey, isSlotPast, resolveBookingSlot } from "@/lib/booking/slots";
 import { slotLabelFromIndex } from "@/lib/booking/technician-slots";
@@ -102,55 +102,56 @@ export async function rescheduleBooking(
   };
 
   try {
+    const serviceId = String(data.serviceId || "").trim();
+    const service = serviceId ? await loadService(db, serviceId) : null;
+    const categoryId =
+      String(data.categoryId || data.serviceCategoryId || "").trim() ||
+      (service ? getServiceCategoryId(service) : "");
+    const serviceTypeId = String(data.serviceTypeId || "").trim();
+    const serviceCategoryId = String(data.serviceCategoryId || categoryId || "").trim();
+
     if (previousTechId && status === "Assigned") {
       try {
-        await assignExistingTechnicianAndLockBusySlot(db, {
+        await assignSpecificPartnerForBooking({
           bookingId,
           technicianId: previousTechId,
           dateStr: params.dateKey,
           slotIndex: slot.slotIndex,
           slotLabel,
+          categoryId: categoryId || undefined,
+          serviceTypeId: serviceTypeId || undefined,
+          serviceCategoryId: serviceCategoryId || undefined,
         });
       } catch (e) {
         const err = e as Error & { code?: string };
         if (err.code !== "ALL_TECHS_BUSY") throw e;
-        const serviceId = String(data.serviceId || "").trim();
-        if (!serviceId) throw e;
-        const service = await loadService(db, serviceId);
-        if (!service) throw new Error("Service not found for reschedule.");
-        const categoryId =
-          String(data.categoryId || data.serviceCategoryId || "").trim() ||
-          getServiceCategoryId(service);
-        await assignNearestTechnicianAndLockBusySlot(db, {
+        if (!categoryId) throw e;
+        await assignNearestPartnerForBooking({
           bookingId,
-          categoryId,
-          service,
-          userLat,
-          userLng,
           dateStr: params.dateKey,
           slotIndex: slot.slotIndex,
           slotLabel,
+          categoryId,
+          serviceTypeId: serviceTypeId || undefined,
+          serviceCategoryId: serviceCategoryId || undefined,
+          userLat,
+          userLng,
         });
       }
     } else {
-      const serviceId = String(data.serviceId || "").trim();
-      if (!serviceId) {
+      if (!categoryId) {
         throw new Error("Service not found for reschedule.");
       }
-      const service = await loadService(db, serviceId);
-      if (!service) throw new Error("Service not found for reschedule.");
-      const categoryId =
-        String(data.categoryId || data.serviceCategoryId || "").trim() ||
-        getServiceCategoryId(service);
-      await assignNearestTechnicianAndLockBusySlot(db, {
+      await assignNearestPartnerForBooking({
         bookingId,
-        categoryId,
-        service,
-        userLat,
-        userLng,
         dateStr: params.dateKey,
         slotIndex: slot.slotIndex,
         slotLabel,
+        categoryId,
+        serviceTypeId: serviceTypeId || undefined,
+        serviceCategoryId: serviceCategoryId || undefined,
+        userLat,
+        userLng,
       });
     }
   } catch (e) {

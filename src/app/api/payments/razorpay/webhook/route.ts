@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
 
     const body = JSON.parse(rawBody) as RazorpayWebhookPayload;
     const event = String(body.event || "");
-    if (event !== "payment.captured" && event !== "payment.authorized") {
+    if (event !== "payment.captured") {
       return jsonWithCors(req, { ok: true, ignored: true });
     }
 
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
     const paymentId = String(entity?.id || "").trim();
     const orderId = String(entity?.order_id || "").trim();
     const status = String(entity?.status || "").toLowerCase();
-    if (!paymentId || !orderId || (status !== "captured" && status !== "authorized")) {
+    if (!paymentId || !orderId || status !== "captured") {
       return jsonWithCors(req, { ok: true, ignored: true });
     }
 
