@@ -1,6 +1,8 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import { bookingPayableAmount } from "@/lib/payments/bookingAmount";
 import {
-  postPartnerWalletInTransaction,
+  commitPartnerWalletPlan,
+  readPartnerWalletPlan,
   resolvePartnerIdFromBooking,
 } from "@/lib/payments/partnerWallet";
 
@@ -53,9 +55,7 @@ export async function applyVerifiedPayment(
       return;
     }
 
-    const expected = money(
-      payment.amount ?? data.quotedFinalAmount ?? data.customerTotal ?? data.amount,
-    );
+    const expected = bookingPayableAmount(data);
     const paid = money(input.amount);
     if (expected > 0 && Math.abs(expected - paid) > 0.01) {
       throw Object.assign(new Error("Payment amount mismatch"), { status: 409, code: "AMOUNT_MISMATCH" });
@@ -72,6 +72,23 @@ export async function applyVerifiedPayment(
       paidAt: FieldValue.serverTimestamp(),
       verifiedAt: FieldValue.serverTimestamp(),
     };
+
+    const mergedBooking = {
+      ...data,
+      payment: paymentPatch,
+      paymentStatus: input.method === "CASH" ? "cash_collected" : "paid",
+    };
+
+    const partnerId = resolvePartnerIdFromBooking(data);
+    const walletPlan = partnerId
+      ? await readPartnerWalletPlan(db, tx, {
+          partnerId,
+          bookingId: input.bookingId,
+          method: input.method,
+          paymentEventKey: input.idempotencyKey,
+          booking: mergedBooking,
+        })
+      : null;
 
     tx.update(bookingRef, {
       payment: paymentPatch,
@@ -91,19 +108,8 @@ export async function applyVerifiedPayment(
     });
     applied = true;
 
-    const partnerId = resolvePartnerIdFromBooking(data);
-    if (partnerId) {
-      await postPartnerWalletInTransaction(db, tx, {
-        partnerId,
-        bookingId: input.bookingId,
-        method: input.method,
-        paymentEventKey: input.idempotencyKey,
-        booking: {
-          ...data,
-          payment: paymentPatch,
-          paymentStatus: input.method === "CASH" ? "cash_collected" : "paid",
-        },
-      });
+    if (walletPlan) {
+      commitPartnerWalletPlan(db, tx, walletPlan);
     }
   });
 

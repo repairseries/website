@@ -1,4 +1,9 @@
-import { FieldValue, type Firestore, type Transaction } from "firebase-admin/firestore";
+import {
+  FieldValue,
+  type DocumentReference,
+  type Firestore,
+  type Transaction,
+} from "firebase-admin/firestore";
 import { financeFromBooking } from "@/lib/server/finance/fromBooking";
 import { bookingPayableAmount } from "@/lib/payments/bookingAmount";
 
@@ -97,137 +102,184 @@ function planWalletEntries(
   return [];
 }
 
+type LedgerWrite = {
+  idempotencyKey: string;
+  entry: PlannedEntry;
+};
+
+type SettlementWrite = {
+  settlementId: string;
+  settlementRef: DocumentReference;
+  obligationRef: DocumentReference;
+  settlementPayload: Record<string, unknown>;
+  obligationPayload: Record<string, unknown>;
+};
+
+/** All Firestore reads for wallet + cash settlement (must run before any tx writes). */
+export type PartnerWalletPlan = {
+  partnerId: string;
+  bookingId: string;
+  paymentEventKey: string;
+  summaryRef: DocumentReference;
+  ledgerWrites: LedgerWrite[];
+  balancePaiseAfter: number;
+  settlementWrite: SettlementWrite | null;
+};
+
 /**
- * Idempotent wallet updates — call inside a Firestore transaction after reads complete.
+ * Read wallet / settlement docs and build write plan. No writes.
+ * Call before booking payment writes in the same transaction.
  */
-export async function postPartnerWalletInTransaction(
+export async function readPartnerWalletPlan(
   db: Firestore,
   tx: Transaction,
   input: WalletPostInput,
-): Promise<{ posted: boolean }> {
+): Promise<PartnerWalletPlan | null> {
   const partnerId = String(input.partnerId || "").trim();
-  if (!partnerId) return { posted: false };
+  if (!partnerId) return null;
 
   const { partnerEarningPaise, companySharePaise, customerTotalPaise } =
     computePaymentWalletAmounts(input.booking);
   const planned = planWalletEntries(input.method, partnerEarningPaise, companySharePaise);
-  if (!planned.length) return { posted: false };
 
-  const ledgerKeys = planned.map((e) => `wallet:${input.paymentEventKey}:${e.suffix}`);
-  const ledgerSnaps = await Promise.all(ledgerKeys.map((k) => tx.get(ledgerRef(db, k))));
   const summaryRef = walletSummaryRef(db, partnerId);
   const summarySnap = await tx.get(summaryRef);
-
   let balancePaise = Number(summarySnap.data()?.balancePaise);
   if (!Number.isFinite(balancePaise)) balancePaise = 0;
 
+  const ledgerWrites: LedgerWrite[] = [];
+  if (planned.length) {
+    const ledgerKeys = planned.map((e) => `wallet:${input.paymentEventKey}:${e.suffix}`);
+    const ledgerSnaps = await Promise.all(ledgerKeys.map((k) => tx.get(ledgerRef(db, k))));
+    for (let i = 0; i < planned.length; i += 1) {
+      if (ledgerSnaps[i]?.exists) continue;
+      const entry = planned[i]!;
+      const idempotencyKey = ledgerKeys[i]!;
+      ledgerWrites.push({ idempotencyKey, entry });
+      balancePaise = applyBalanceDelta(balancePaise, entry.direction, entry.amountPaise);
+    }
+  }
+
+  let settlementWrite: SettlementWrite | null = null;
+  if (input.method === "CASH" && companySharePaise > 0) {
+    const obligationEventRef = db.doc(`paymentEvents/cash_obligation:${input.paymentEventKey}`);
+    const obligationSnap = await tx.get(obligationEventRef);
+    if (!obligationSnap.exists) {
+      const settlementDate = istDateKey();
+      const settlementId = `${partnerId}_${settlementDate}`;
+      const settlementRef = db.doc(`cashSettlements/${settlementId}`);
+      const settlementSnap = await tx.get(settlementRef);
+      const prev = settlementSnap.data() || {};
+      const bookingIds = Array.isArray(prev.cashBookingIds) ? [...prev.cashBookingIds] : [];
+      if (!bookingIds.includes(input.bookingId)) bookingIds.push(input.bookingId);
+
+      const totalCash =
+        Math.round(Number(prev.totalCashCollectedPaise) || 0) + customerTotalPaise;
+      const companyDue =
+        Math.round(Number(prev.companyShareDuePaise) || 0) + companySharePaise;
+      const remitted = Math.round(Number(prev.amountRemittedPaise) || 0);
+      const outstanding = Math.max(0, companyDue - remitted);
+
+      settlementWrite = {
+        settlementId,
+        settlementRef,
+        obligationRef: obligationEventRef,
+        settlementPayload: {
+          settlementId,
+          partnerId,
+          settlementDate,
+          cashBookingIds: bookingIds,
+          totalCashCollectedPaise: totalCash,
+          companyShareDuePaise: companyDue,
+          amountRemittedPaise: remitted,
+          amountOutstandingPaise: outstanding,
+          status: outstanding > 0 ? "PENDING" : "SETTLED",
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        obligationPayload: {
+          type: "cash_settlement_obligation",
+          partnerId,
+          bookingId: input.bookingId,
+          settlementId,
+          processedAt: FieldValue.serverTimestamp(),
+        },
+      };
+    }
+  }
+
+  if (!ledgerWrites.length && !settlementWrite) return null;
+
+  return {
+    partnerId,
+    bookingId: input.bookingId,
+    paymentEventKey: input.paymentEventKey,
+    summaryRef,
+    ledgerWrites,
+    balancePaiseAfter: balancePaise,
+    settlementWrite,
+  };
+}
+
+/** Apply a plan from {@link readPartnerWalletPlan} — writes only. */
+export function commitPartnerWalletPlan(
+  db: Firestore,
+  tx: Transaction,
+  plan: PartnerWalletPlan,
+): { posted: boolean } {
   let posted = false;
-  for (let i = 0; i < planned.length; i += 1) {
-    if (ledgerSnaps[i]?.exists) continue;
-    const entry = planned[i]!;
-    const idempotencyKey = ledgerKeys[i]!;
+  for (const { idempotencyKey, entry } of plan.ledgerWrites) {
     tx.set(ledgerRef(db, idempotencyKey), {
       transactionId: idempotencyKey,
-      partnerId,
-      bookingId: input.bookingId,
+      partnerId: plan.partnerId,
+      bookingId: plan.bookingId,
       type: entry.type,
       direction: entry.direction,
       amountPaise: entry.amountPaise,
       currency: "INR",
       status: "POSTED",
       sourceType: entry.sourceType,
-      sourceId: input.paymentEventKey,
+      sourceId: plan.paymentEventKey,
       idempotencyKey,
       createdAt: FieldValue.serverTimestamp(),
     });
-    balancePaise = applyBalanceDelta(balancePaise, entry.direction, entry.amountPaise);
     posted = true;
   }
 
-  if (posted) {
+  if (plan.ledgerWrites.length) {
     tx.set(
-      summaryRef,
+      plan.summaryRef,
       {
-        partnerId,
+        partnerId: plan.partnerId,
         currency: "INR",
-        balancePaise,
+        balancePaise: plan.balancePaiseAfter,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
     );
   }
 
-  if (input.method === "CASH" && companySharePaise > 0) {
-    await upsertCashSettlementObligationInTransaction(db, tx, {
-      partnerId,
-      bookingId: input.bookingId,
-      settlementDate: istDateKey(),
-      cashCollectedPaise: customerTotalPaise,
-      companyShareDuePaise: companySharePaise,
-      paymentEventKey: input.paymentEventKey,
-    });
+  if (plan.settlementWrite) {
+    const sw = plan.settlementWrite;
+    tx.set(sw.settlementRef, sw.settlementPayload, { merge: true });
+    tx.set(sw.obligationRef, sw.obligationPayload);
+    posted = true;
   }
 
   return { posted };
 }
 
-export async function upsertCashSettlementObligationInTransaction(
+/**
+ * Idempotent wallet updates inside a transaction (reads then writes in order).
+ * Prefer {@link readPartnerWalletPlan} before other writes in the same transaction.
+ */
+export async function postPartnerWalletInTransaction(
   db: Firestore,
   tx: Transaction,
-  input: {
-    partnerId: string;
-    bookingId: string;
-    settlementDate: string;
-    cashCollectedPaise: number;
-    companyShareDuePaise: number;
-    paymentEventKey: string;
-  },
-): Promise<void> {
-  const partnerId = String(input.partnerId || "").trim();
-  if (!partnerId || input.companyShareDuePaise <= 0) return;
-
-  const obligationEventRef = db.doc(`paymentEvents/cash_obligation:${input.paymentEventKey}`);
-  const obligationSnap = await tx.get(obligationEventRef);
-  if (obligationSnap.exists) return;
-
-  const settlementId = `${partnerId}_${input.settlementDate}`;
-  const ref = db.doc(`cashSettlements/${settlementId}`);
-  const snap = await tx.get(ref);
-  const prev = snap.data() || {};
-  const bookingIds = Array.isArray(prev.cashBookingIds) ? [...prev.cashBookingIds] : [];
-  if (!bookingIds.includes(input.bookingId)) bookingIds.push(input.bookingId);
-
-  const totalCash =
-    Math.round(Number(prev.totalCashCollectedPaise) || 0) + input.cashCollectedPaise;
-  const companyDue =
-    Math.round(Number(prev.companyShareDuePaise) || 0) + input.companyShareDuePaise;
-  const remitted = Math.round(Number(prev.amountRemittedPaise) || 0);
-  const outstanding = Math.max(0, companyDue - remitted);
-
-  tx.set(
-    ref,
-    {
-      settlementId,
-      partnerId,
-      settlementDate: input.settlementDate,
-      cashBookingIds: bookingIds,
-      totalCashCollectedPaise: totalCash,
-      companyShareDuePaise: companyDue,
-      amountRemittedPaise: remitted,
-      amountOutstandingPaise: outstanding,
-      status: outstanding > 0 ? "PENDING" : "SETTLED",
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
-
-  tx.set(obligationEventRef, {
-    type: "cash_settlement_obligation",
-    partnerId,
-    bookingId: input.bookingId,
-    settlementId,
-    processedAt: FieldValue.serverTimestamp(),
-  });
+  input: WalletPostInput,
+): Promise<{ posted: boolean }> {
+  const plan = await readPartnerWalletPlan(db, tx, input);
+  if (!plan) return { posted: false };
+  return commitPartnerWalletPlan(db, tx, plan);
 }
 
 export function istDateKey(d = new Date()): string {
