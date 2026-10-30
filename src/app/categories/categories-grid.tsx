@@ -5,6 +5,8 @@ import { RemoteImage as Image } from "@/components/remote-image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getCategoryPath, getHierarchyPath } from "@/lib/catalog/slug";
+import { isWallPanelCatalogItem } from "@/lib/catalog/wallPanel";
+import { isCatalogActive, sortByDisplayOrder } from "@/lib/catalog/hierarchy";
 import { getDb } from "@/lib/firebase/firestore";
 
 type CategoryDoc = {
@@ -69,8 +71,8 @@ export function CategoriesGrid() {
             }))
           : [];
         if (!mounted) return;
-        setCategories(rows);
-        setServiceTypes(types);
+        setCategories(rows.filter((c) => isCatalogActive(c)));
+        setServiceTypes(sortByDisplayOrder(types.filter((c) => isCatalogActive(c))));
       } catch (e) {
         if (!mounted) return;
         setError(
@@ -119,7 +121,11 @@ export function CategoriesGrid() {
       {tiles.map((c) => {
         const name = getCategoryName(c);
         const img = getCategoryImage(c);
-        const href = serviceTypes.length ? getHierarchyPath([c]) : getCategoryPath(c);
+        const href = isWallPanelCatalogItem(c)
+          ? "/wall-panel"
+          : serviceTypes.length
+            ? getHierarchyPath([c])
+            : getCategoryPath(c);
 
         return (
           <Link

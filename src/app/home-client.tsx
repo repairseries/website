@@ -16,6 +16,9 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { isWallPanelCatalogItem } from "@/lib/catalog/wallPanel";
+import { isCatalogActive, sortByDisplayOrder } from "@/lib/catalog/hierarchy";
 import { collection, doc, getDocs, onSnapshot, orderBy, query, where } from "firebase/firestore";
 import { ServicePrice } from "@/components/services/service-price";
 import {
@@ -73,6 +76,7 @@ export function HomePageClient() {
   const [selectedTypeId, setSelectedTypeId] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     async function fetchData() {
@@ -113,7 +117,13 @@ export function HomePageClient() {
             .map((doc) => ({ id: doc.id, ...doc.data() }) as ServiceDoc)
             .filter((s) => String((s as { previewStatus?: string }).previewStatus ?? "Active") !== "Inactive"),
         );
-        setServiceTypes(typeSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc));
+        setServiceTypes(
+          sortByDisplayOrder(
+            typeSnap.docs
+              .map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc)
+              .filter((row) => isCatalogActive(row)),
+          ),
+        );
         setServiceCategories(issueSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc));
         setBanners(bannerSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as HomeBannerDoc));
       } catch (error) {
@@ -422,7 +432,14 @@ export function HomePageClient() {
           selectedServiceTypeId={selectedType?.id || ""}
           selectedServiceTypeName={String(selectedType?.title || selectedType?.name || "")}
           banners={banners}
-          onSelectServiceType={setSelectedTypeId}
+          onSelectServiceType={(id) => {
+            const type = serviceTypes.find((t) => t.id === id);
+            if (isWallPanelCatalogItem(type)) {
+              router.push("/wall-panel");
+              return;
+            }
+            setSelectedTypeId(id);
+          }}
         />
       ) : (
         <>

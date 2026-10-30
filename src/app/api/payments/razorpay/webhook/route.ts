@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { jsonWithCors, publicErrorMessage } from "@/lib/server/http";
 import { applyVerifiedPayment } from "@/lib/payments/applyVerifiedPayment";
+import { applyPartnerWalletPayment } from "@/lib/payments/applyPartnerWalletPayment";
 import { verifyRazorpayWebhookSignature } from "@/lib/payments/razorpay";
 
 export const runtime = "nodejs";
@@ -44,7 +45,24 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getAdminDb();
-    let bookingId = String(entity?.notes?.bookingId || "").trim();
+    const notes = entity?.notes || {};
+    if (String(notes.purpose || "") === "partner_wallet_settlement") {
+      const partnerId = String(notes.partnerId || "").trim();
+      const paymentIntentId = String(notes.paymentIntentId || "").trim();
+      const amountPaise = Math.round(Number(entity?.amount || 0));
+      const walletResult = await applyPartnerWalletPayment(db, {
+        partnerId,
+        amountPaise,
+        paymentIntentId,
+        idempotencyKey: `partner_wallet_pay:${paymentId}`,
+        razorpayOrderId: orderId,
+        razorpayPaymentId: paymentId,
+        sourceType: "RAZORPAY_WEBHOOK",
+      });
+      return jsonWithCors(req, { ok: true, applied: walletResult.applied, partnerWallet: true });
+    }
+
+    let bookingId = String(notes.bookingId || "").trim();
     if (!bookingId) {
       const q = await db
         .collection("bookings")
@@ -54,7 +72,26 @@ export async function POST(req: NextRequest) {
       bookingId = q.empty ? "" : q.docs[0]!.id;
     }
     if (!bookingId) {
-      return jsonWithCors(req, { error: "Booking not mapped" }, { status: 404 });
+      const intentQ = await db
+        .collection("partnerWalletPayments")
+        .where("razorpayOrderId", "==", orderId)
+        .limit(1)
+        .get();
+      if (!intentQ.empty) {
+        const intent = intentQ.docs[0]!;
+        const data = intent.data() || {};
+        const walletResult = await applyPartnerWalletPayment(db, {
+          partnerId: String(data.partnerId || ""),
+          amountPaise: Math.round(Number(entity?.amount || 0)),
+          paymentIntentId: intent.id,
+          idempotencyKey: `partner_wallet_pay:${paymentId}`,
+          razorpayOrderId: orderId,
+          razorpayPaymentId: paymentId,
+          sourceType: "RAZORPAY_WEBHOOK",
+        });
+        return jsonWithCors(req, { ok: true, applied: walletResult.applied, partnerWallet: true });
+      }
+      return jsonWithCors(req, { error: "Payment not mapped" }, { status: 404 });
     }
 
     const amountRupees = Number(entity?.amount || 0) / 100;

@@ -1,5 +1,6 @@
 import {
   FieldValue,
+  Timestamp,
   type DocumentReference,
   type Firestore,
   type Transaction,
@@ -120,7 +121,9 @@ export type PartnerWalletPlan = {
   partnerId: string;
   bookingId: string;
   paymentEventKey: string;
+  method: "ONLINE" | "CASH";
   summaryRef: DocumentReference;
+  openingBalancePaise: number;
   ledgerWrites: LedgerWrite[];
   balancePaiseAfter: number;
   settlementWrite: SettlementWrite | null;
@@ -144,8 +147,12 @@ export async function readPartnerWalletPlan(
 
   const summaryRef = walletSummaryRef(db, partnerId);
   const summarySnap = await tx.get(summaryRef);
-  let balancePaise = Number(summarySnap.data()?.balancePaise);
-  if (!Number.isFinite(balancePaise)) balancePaise = 0;
+  const openingBalancePaise = (() => {
+    let b = Number(summarySnap.data()?.balancePaise);
+    if (!Number.isFinite(b)) b = 0;
+    return Math.round(b);
+  })();
+  let balancePaise = openingBalancePaise;
 
   const ledgerWrites: LedgerWrite[] = [];
   if (planned.length) {
@@ -213,7 +220,9 @@ export async function readPartnerWalletPlan(
     partnerId,
     bookingId: input.bookingId,
     paymentEventKey: input.paymentEventKey,
+    method: input.method,
     summaryRef,
+    openingBalancePaise,
     ledgerWrites,
     balancePaiseAfter: balancePaise,
     settlementWrite,
@@ -227,7 +236,14 @@ export function commitPartnerWalletPlan(
   plan: PartnerWalletPlan,
 ): { posted: boolean } {
   let posted = false;
+  let running = plan.openingBalancePaise;
+  const settlementDueAt = Timestamp.fromDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000));
+
   for (const { idempotencyKey, entry } of plan.ledgerWrites) {
+    const opening = running;
+    const signed =
+      entry.direction === "CREDIT" ? entry.amountPaise : -entry.amountPaise;
+    running = opening + signed;
     tx.set(ledgerRef(db, idempotencyKey), {
       transactionId: idempotencyKey,
       partnerId: plan.partnerId,
@@ -235,11 +251,18 @@ export function commitPartnerWalletPlan(
       type: entry.type,
       direction: entry.direction,
       amountPaise: entry.amountPaise,
+      balanceImpact: signed,
+      openingBalancePaise: opening,
+      closingBalancePaise: running,
       currency: "INR",
       status: "POSTED",
+      settlementStatus: entry.type === "PARTNER_EARNING" ? "PENDING" : "SETTLED",
+      ...(entry.type === "PARTNER_EARNING" ? { settlementDueAt } : {}),
+      paymentMethod: plan.method,
       sourceType: entry.sourceType,
       sourceId: plan.paymentEventKey,
       idempotencyKey,
+      createdBy: "SYSTEM",
       createdAt: FieldValue.serverTimestamp(),
     });
     posted = true;

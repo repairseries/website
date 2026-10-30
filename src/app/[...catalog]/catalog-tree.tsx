@@ -12,6 +12,7 @@ import {
 } from "@/lib/catalog/resolve";
 import { catalogImage, catalogTitle, isCatalogActive, sortByDisplayOrder } from "@/lib/catalog/hierarchy";
 import { getHierarchyPath, getServicePath } from "@/lib/catalog/slug";
+import { isWallPanelCatalogItem } from "@/lib/catalog/wallPanel";
 import { RemoteImage as Image } from "@/components/remote-image";
 
 type Named = { id: string; title?: string; name?: string; slug?: string; image?: string; imageUrl?: string; icon?: string; serviceTypeId?: string; categoryId?: string; status?: string; active?: boolean };
@@ -55,6 +56,10 @@ export function CatalogTree({ segments }: { segments: string[] }) {
         }
         const trail: Named[] = [type as Named];
         if (segs.length === 1) {
+          if (isWallPanelCatalogItem(type as Named)) {
+            window.location.replace("/wall-panel");
+            return;
+          }
           const snap = await getDocs(query(collection(db, "categories"), where("serviceTypeId", "==", type.id)));
           const rows = sortByDisplayOrder(
             snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Named).filter(isCatalogActive),
@@ -122,6 +127,7 @@ export function CatalogTree({ segments }: { segments: string[] }) {
   }, [segs]);
 
   const hrefFor = (item: Named) => {
+    if (isWallPanelCatalogItem(item)) return "/wall-panel";
     if (childHref === "type") return getHierarchyPath([item]);
     if (childHref === "category") return getHierarchyPath([crumbs[0], item]);
     if (childHref === "issue") return getHierarchyPath([crumbs[0], crumbs[1], item]);

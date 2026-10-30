@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { apiOptions, jsonWithCors, publicErrorMessage } from "@/lib/server/http";
 import { requireApiCaller } from "@/lib/server/auth";
+import { assertAdminPanelCaller } from "@/lib/server/adminAccess";
 
 export const runtime = "nodejs";
 
@@ -10,23 +11,11 @@ export function OPTIONS(req: NextRequest) {
   return apiOptions(req);
 }
 
-async function assertAdmin(caller: { uid: string; role?: string }) {
-  if (caller.role === "admin") return;
-  const db = getAdminDb();
-  const snap = await db.doc(`adminUsers/${caller.uid}`).get();
-  const role = String(snap.data()?.role || "").toLowerCase();
-  const ok =
-    snap.exists &&
-    String(snap.data()?.status || "") === "active" &&
-    (role === "superadmin" || role === "technicianmanager" || role === "bookingmanager");
-  if (!ok) throw Object.assign(new Error("Admin only"), { status: 403 });
-}
-
 /** Verify partner remittance and post settlement-clearing wallet credit. */
 export async function POST(req: NextRequest) {
   try {
     const caller = await requireApiCaller(req);
-    await assertAdmin(caller);
+    await assertAdminPanelCaller(caller);
 
     const body = (await req.json().catch(() => ({}))) as {
       submissionId?: string;

@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { isWallPanelCatalogItem } from "@/lib/catalog/wallPanel";
+import { isCatalogActive, sortByDisplayOrder } from "@/lib/catalog/hierarchy";
 import {
   collection,
   getDocs,
@@ -71,6 +74,7 @@ type SavedAddress = {
 
 /** Phone-width home that mirrors the Repair Series user app shell. */
 export function MobileAppHome() {
+  const router = useRouter();
   const { customer } = useAuth();
   const { label, loading: locationLoading, refreshFromGps, applySavedAddress } =
     useLocation();
@@ -111,7 +115,13 @@ export function MobileAppHome() {
       );
     });
     void getDocs(collection(db, "serviceTypes")).then((snap) => {
-      setServiceTypes(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc));
+      setServiceTypes(
+        sortByDisplayOrder(
+          snap.docs
+            .map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc)
+            .filter((row) => isCatalogActive(row)),
+        ),
+      );
     });
     void getDocs(collection(db, "serviceCategories")).then((snap) => {
       setServiceCategories(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CategoryDoc));
@@ -337,6 +347,11 @@ export function MobileAppHome() {
           selectedServiceTypeName={String(selectedType?.title || selectedType?.name || "")}
           banners={banners}
           onSelectServiceType={(id) => {
+            const type = serviceTypes.find((t) => t.id === id);
+            if (isWallPanelCatalogItem(type)) {
+              router.push("/wall-panel");
+              return;
+            }
             setSelectedTypeId(id);
             window.scrollTo({ top: 0, behavior: "smooth" });
           }}
